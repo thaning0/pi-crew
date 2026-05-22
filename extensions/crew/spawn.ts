@@ -368,10 +368,10 @@ export function createPiMemberAdapter(options?: {
 		async stop(member: RoomMemberState): Promise<void> {
 			const log = createRoomLogger(null, "spawn");
 			const pid = Number(member.runtimeId ?? "");
-			log.info("pi member stopping", { memberName: member.name, pid });
+			log.debug("pi member stopping", { memberName: member.name, pid });
 			try {
 				await terminatePid(pid, { requireExit: true });
-				log.info("pi member stopped", { memberName: member.name, pid });
+				log.debug("pi member stopped", { memberName: member.name, pid });
 			} catch (error) {
 				log.error("pi member stop failed", { memberName: member.name, pid, error: String(error) });
 				throw error;
@@ -380,10 +380,10 @@ export function createPiMemberAdapter(options?: {
 		async remove(member: RoomMemberState): Promise<void> {
 			const log = createRoomLogger(null, "spawn");
 			const pid = Number(member.runtimeId ?? "");
-			log.info("pi member removing", { memberName: member.name, pid });
+			log.debug("pi member removing", { memberName: member.name, pid });
 			try {
 				await terminatePid(pid, { remove: true });
-				log.info("pi member removed", { memberName: member.name, pid });
+				log.debug("pi member removed", { memberName: member.name, pid });
 			} catch (error) {
 				log.error("pi member remove failed", { memberName: member.name, pid, error: String(error) });
 				throw error;
@@ -534,7 +534,7 @@ export function createPaseoPiMemberAdapter(): RoomSpawnAdapter {
 				const client = await helpers.connectToDaemon({ host: process.env.PASEO_HOST });
 				try {
 					await client.cancelAgent?.(member.runtimeId);
-					log.info("paseo member stopped", { memberName: member.name, runtimeId: member.runtimeId });
+					log.debug("paseo member stopped", { memberName: member.name, runtimeId: member.runtimeId });
 				} finally {
 					await client.close?.().catch(() => {});
 				}
@@ -551,7 +551,7 @@ export function createPaseoPiMemberAdapter(): RoomSpawnAdapter {
 				const client = await helpers.connectToDaemon({ host: process.env.PASEO_HOST });
 				try {
 					await client.deleteAgent?.(member.runtimeId);
-					log.info("paseo member removed", { memberName: member.name, runtimeId: member.runtimeId });
+					log.debug("paseo member removed", { memberName: member.name, runtimeId: member.runtimeId });
 				} finally {
 					await client.close?.().catch(() => {});
 				}
