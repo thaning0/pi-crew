@@ -1,7 +1,7 @@
 ---
 name: Plan Consistency Reviewer
 description: Specialist reviewer for checking whether repository changes are consistent with the intended implementation plan.
-tools: read, grep, find, ls, todo, wait, memory_note, memory_recall, memory_reflect
+tools: read, grep, find, ls, todo, wait
 thinking: xhigh
 worktree: false
 ---

@@ -1,7 +1,7 @@
 ---
 name: Code quality reviewer
 description: Code review specialist for quality evaluation of changed code. Use after worker to validate changes.
-tools: read, grep, find, ls, todo, wait, memory_note, memory_recall, memory_reflect
+tools: read, grep, find, ls, todo, wait
 thinking: xhigh
 worktree: false
 ---

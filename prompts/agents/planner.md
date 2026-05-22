@@ -1,7 +1,7 @@
 ---
 name: planner
 description: Task planner for creating actionable implementation plans. Use after gathering context with explorer or researcher.
-tools: read, write, edit, grep, find, ls, todo, wait, memory_note, memory_recall, memory_reflect
+tools: read, write, edit, grep, find, ls, todo, wait
 thinking: xhigh
 worktree: false
 ---

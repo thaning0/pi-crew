@@ -1,7 +1,7 @@
 ---
 name: researcher
 description: Task research specialist for comprehensive project analysis. Use for multi-source investigation: code + web + documentation.
-tools: read, grep, find, ls, todo, write, wait, web_search, web_fetch, mcp, memory_note, memory_recall, memory_reflect
+tools: read, grep, find, ls, todo, write, wait, web_search, web_fetch, mcp
 model: deepseek-v4-pro
 thinking: xhigh
 worktree: false

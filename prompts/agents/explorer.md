@@ -1,7 +1,7 @@
 ---
 name: explorer
 description: Fast read-only codebase exploration, web exploration subagent. Use to gather context and informations. Specify thoroughness quick, medium, or thorough.
-tools: read, grep, find, ls, web_search, web_fetch, todo, wait, mcp, memory_note, memory_recall
+tools: read, grep, find, ls, web_search, web_fetch, todo, wait
 model: deepseek-v4-flash
 thinking: low
 worktree: false

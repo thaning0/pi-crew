@@ -1,7 +1,7 @@
 ---
 name: advisor
 description: Feature implementation guidance and debugging specialist. Use for deep analysis of problems, root-cause explanations, and solution approaches.
-tools: read, grep, find, ls, todo, wait, memory_note, memory_recall, memory_reflect 
+tools: read, grep, find, ls, todo, wait
 thinking: xhigh
 worktree: false
 ---
