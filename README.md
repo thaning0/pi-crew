@@ -19,7 +19,7 @@ Multi-agent crew orchestration extension for [pi](https://github.com/earendil-wo
 ## Install
 
 ```bash
-pi install git:https://github.com/thaning0/pi-crew.git@v1.0.0
+pi install git:https://github.com/thaning0/pi-crew.git
 ```
 
 This registers 4 extensions (`crew`, `builtin-tools`, `todo`, `wait`), 2 skills, and 8 agent prompt templates (plus support for custom agent types).
