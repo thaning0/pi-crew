@@ -355,7 +355,7 @@ export default function roomExtension(
 			// may have been rebuilt by prior setActiveTools calls, losing the
 			// bootstrap block. memberType survives across prompt rebuilds.
 			const agentDef = activeRoom.memberType
-				? loadTypedRoomAgentDefinition(activeRoom.memberType)
+				? loadTypedRoomAgentDefinition(activeRoom.memberType, ctx.cwd)
 				: null;
 			let allowed: string[];
 			const crewMessageToolNames = [
@@ -568,7 +568,7 @@ export default function roomExtension(
 				// Build available subagents section from agent definitions so the
 				// orchestrator always knows what types are available without
 				// needing to call crew_roles first.
-				const agentTypes = listRoomAgentTypes();
+				const agentTypes = listRoomAgentTypes(ctx.cwd);
 				const subagentsBlock =
 					agentTypes.length > 0
 						? "## Available Subagents\n" +
