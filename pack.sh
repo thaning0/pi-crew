@@ -43,7 +43,7 @@ case "${1:-sync}" in
     echo "  git add -A"
     echo "  git commit -m \"Release v${VERSION}\""
     echo "  git tag v${VERSION}"
-    echo "  git push origin main v${VERSION}"
+    echo "  git push origin master v${VERSION}"
     echo ""
     echo "Then: ./pack.sh clean"
     ;;
