@@ -5,7 +5,8 @@ Multi-agent crew orchestration extension for [pi](https://github.com/earendil-wo
 ## Features
 
 - **Multi-agent rooms** — Create persistent rooms where subagents collaborate via a shared message board
-- **7 built-in agent types** — explorer, worker, researcher, planner, advisor, code-quality-reviewer, plan-consistency-reviewer
+- **8 built-in agent types** — explorer, worker, researcher, planner, advisor, code-quality-reviewer, plan-consistency-reviewer, plan-evaluator
+- **Custom agent types** — Define your own subagents via `.md` files in `.pi/crew_agents/` (repo-level) or `~/.pi/crew_agents/` (global)
 - **Task management** — Assign tasks, track completion/error/cancellation, with full status visibility
 - **Dependency chaining** — `{input:#N}` placeholders enable task-to-task workflows with automatic dependency resolution
 - **Git worktree isolation** — Each worker agent gets an isolated branch; snapshots are auto-committed on task completion
@@ -21,7 +22,7 @@ Multi-agent crew orchestration extension for [pi](https://github.com/earendil-wo
 pi install git:https://github.com/thaning0/pi-crew.git@v1.0.0
 ```
 
-This registers 4 extensions (`crew`, `builtin-tools`, `todo`, `wait`), 2 skills, and 7 agent prompt templates.
+This registers 4 extensions (`crew`, `builtin-tools`, `todo`, `wait`), 2 skills, and 8 agent prompt templates (plus support for custom agent types).
 
 ## Quick Start
 
@@ -66,7 +67,32 @@ crew_tasks {}
 | `plan-consistency-reviewer` | Plan consistency verification | — | No |
 | `plan-evaluator` | Plan evaluation against success criteria | — | No |
 
-Agent types are defined as Markdown files in `prompts/agents/` with YAML frontmatter. You can add custom agent types by creating new files in your local `prompts/` directory.
+Agent types are defined as Markdown files with YAML frontmatter. You can add custom agent types by creating `.md` files in these directories (searched in priority order):
+
+1. **Repo-level** — `.pi/crew_agents/` (relative to your repo root, **highest priority**)
+2. **Global** — `~/.pi/crew_agents/` (available across all projects)
+3. **Built-in** — `prompts/agents/` (shipped with pi-crew, lowest priority)
+
+When the same agent type exists in multiple directories, the higher-priority one wins — making it easy to override a built-in agent without modifying the extension.
+
+### Custom agent file format
+
+Create a `.md` file with YAML frontmatter. Example `~/.pi/crew_agents/db-expert.md`:
+
+```markdown
+---
+name: db-expert
+description: Expert in database schema design and SQL optimization
+tools: read, grep, find, ls, todo, wait
+thinking: high
+worktree: false
+---
+
+You are a database expert. Your role is to design schemas,
+write optimized queries, and review database changes.
+```
+
+Then spawn it: `crew_add { name: "db", type: "db-expert" }`
 
 ## Crew Commands
 
