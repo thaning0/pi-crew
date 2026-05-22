@@ -164,6 +164,10 @@ export interface SpawnMemberRequest {
 	initialTask?: { task: string; boardMessageSeq: number };
 	/** Thinking level for the spawned member: off, minimal, low, medium, high, xhigh. */
 	thinkingLevel?: import("@mariozechner/pi-agent-core").ThinkingLevel;
+	/** Room bootstrap data for env var injection into the spawned process.
+	 *  All fields (roomId, roomDir, memberName, token, etc.) are extracted
+	 *  into PI_ROOM_* env vars by each adapter. */
+	bootstrap?: RoomBootstrap;
 }
 
 export interface QueuedTaskHandle {

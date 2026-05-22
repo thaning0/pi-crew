@@ -752,6 +752,7 @@ export async function queueCrewAdd(
 				tools: typedAgent.tools
 					? [...typedAgent.tools, ...crewMessageToolNames]
 					: typedAgent.tools,
+				bootstrap,
 				...(initialTaskBoard
 					? { initialTask: { task: params.task!, boardMessageSeq: initialTaskBoard.boardMessageSeq } }
 					: {}),
