@@ -64,7 +64,14 @@ crew_batch {
 - Single simple task with one agent → Pattern 1
 - Complex dependency chains with conditional handoffs → Pattern 2
 
-### Pattern 1: Simple Serial Tasks
+### Pattern 1: Transient Agents for One-Off Tasks
+For quick, one-off tasks that don't require ongoing context, spawn a transient agent, assign the task using `crew_add`. The agent will be auto removed after completing the task and replying. This is ideal for simple, independent tasks that don't warrant a permanent agent.
+
+`crew_add { name: "scout", type: "explorer", task: "Investigate what mature open-source OAuth solutions are available?", transient: true }`
+
+- Transient agents are automatically removed after task completion
+
+### Pattern 2: Serial Tasks
 
 Assigns tasks one at a time, waiting for each to complete:
 
@@ -73,9 +80,9 @@ crew_add { name: "worker", type: "worker" }
 crew_tell { to: "worker", summary: "Task A", kind: "task" }
 // Wait for completion
 ```
-- when the worker completes Task A, it sends a `crew_reply` and becomes `idle` again, ready for the next task
+- when the worker completes Task A, it becomes `idle` and ready for the next task
 
-### Pattern 2: Auto-Handoff Chain (Agents Pass Work to Each Other)
+### Pattern 3: Auto-Handoff Chain (Agents Pass Work to Each Other)
 
 Agents communicate via `@mention` to trigger the next step without lead intervention. The lead sets up all tasks upfront, embedding handoff instructions in the task content. Use `{input:#N}` in content to declare dependencies on upstream task messages (where N is the upstream task's seq number). When all dependencies complete, the system sends an automatic notification to the downstream agent.
 
@@ -109,18 +116,12 @@ crew_tell {
 } 
 ```
 **Key points:**
-- Assign all tasks upfront — each agent is `running` but waits for its trigger
+- Assign all tasks upfront — each agent waits for its trigger
 - Embed `@mention` instructions in task `content`, not `summary`
 - Use `{input:#N}` in task content to declare dependencies on upstream task messages
-- When all `{input:#N}` placeholders in a task are completed, system sends an automatic "All dependencies ready" info message
-- If any upstream was cancelled, the notification says "Dependency cancelled" and prompts the agent to ask lead to re-assign
-- If any upstream ended with error, the notification says "Dependency failed" and prompts the agent to check upstream results or reply with `crew_reply kind=error`
-- Lead only needs to monitor — no manual handoff required
-
-### Pattern 3: Transient Agents for One-Off Tasks
-For quick, one-off tasks that don't require ongoing context, spawn a transient agent, assign the task using `crew_add`. The agent will be auto removed after completing the task and replying. This is ideal for simple, independent tasks that don't warrant a permanent agent.
-
-`crew_add { name: "scout", type: "explorer", task: "Investigate what mature open-source OAuth solutions are available?" }`
+- When all `{input:#N}` placeholders in a task are completed, system sends an automatic "All dependencies ready" info message to trigger the downstream agent
+- If any upstream was cancelled or error, the notification says "Dependency cancelled/failed" to notify downstream agents
+- Lead can monitor progress without manual handoff
 
 ### Git Worktrees & Merging
 
@@ -142,3 +143,23 @@ All subagents (including those spawned by `crew_batch`) work in isolated git wor
 
 - Logs are save in `~/.pi/agent/runtime/rooms/room-<uuid>/agent.log`, which you can check for detailed info and errors. Use `jq` to read structured logs. Log level is set by environment variable `PI_ROOM_LOG_LEVEL` (default `error`, options: `info`, `error`).
 - RoomID is in the first message of `crew_messages`.
+
+## Custom agents
+
+When user want to add a custom agent that is not in the predefined roles, provides following details:
+- Put the `custom-agent.md` file in following path:
+  - repo agents: `.pi/crew_agents`
+  - global agents: `~/.pi/crew_agents`
+- Priority: repo > global > built-in, same name will override
+- File format:
+  ```markdown
+  ---
+  name: agent-name
+  description: Description of the agent's role and capabilities.
+  tools: read, grep, find, ls, ...
+  thinking: xhigh
+  model: deepseek-v4-pro
+  worktree: false # true if the agent needs a separate git worktree, false if it can share with the owner
+  ---
+  You are ...
+  ```
