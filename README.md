@@ -209,6 +209,10 @@ pi-crew extends pi with a room-based multi-agent system:
 - **Dual backend** — Supports both pi child processes and Paseo daemon agents
 - **Bootstrap block** — Room context is embedded in each subagent's system prompt for initialization
 
+## Paseo Compatibility
+- Version 2.0.0 of this extension requires Paseo >= 0.1.79
+- Older versions (1.x) are compatible with Paseo <= 0.1.78
+
 ## License
 
 MIT

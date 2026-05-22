@@ -115,6 +115,17 @@ export interface RoomBootstrap {
 	spawnTaskId?: string | null;
 }
 
+/** Environment variable names passed from owner to spawned member agents. */
+export const ROOM_ENV = {
+	ROOM_ID: "PI_ROOM_ID",
+	ROOM_DIR: "PI_ROOM_DIR",
+	MEMBER_NAME: "PI_ROOM_MEMBER_NAME",
+	MEMBER_TYPE: "PI_ROOM_MEMBER_TYPE",
+	BOOTSTRAP_TOKEN: "PI_ROOM_BOOTSTRAP_TOKEN",
+	OWNER_NAME: "PI_ROOM_OWNER_NAME",
+	OWNER_SESSION_ID: "PI_ROOM_OWNER_SESSION_ID",
+} as const;
+
 export interface RoomExecutionContext {
 	cwd: string;
 	hasUI: boolean;
@@ -164,6 +175,13 @@ export interface SpawnMemberRequest {
 	initialTask?: { task: string; boardMessageSeq: number };
 	/** Thinking level for the spawned member: off, minimal, low, medium, high, xhigh. */
 	thinkingLevel?: import("@mariozechner/pi-agent-core").ThinkingLevel;
+	/** Room bootstrap data for env var injection into the spawned process.
+	 *  All fields (roomId, roomDir, memberName, token, etc.) are extracted
+	 *  into PI_ROOM_* env vars by each adapter. */
+	bootstrap?: RoomBootstrap;
+	/** Owner's Paseo agent ID (from PASEO_AGENT_ID). Passed directly to the
+	 *  Paseo adapter so sub-agents are linked to the parent in the UI. */
+	parentPaseoAgentId?: string;
 }
 
 export interface QueuedTaskHandle {

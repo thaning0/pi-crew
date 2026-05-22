@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { parseRoomBootstrapBlock } from "./bootstrap.ts";
+import { parseRoomBootstrapFromEnv } from "./bootstrap.ts";
 import {
 	applyIncomingMessageState,
 	applyOutgoingMessageState,
@@ -627,7 +627,7 @@ export async function activateBootstrapRoom(
 		message: RoomMessage;
 	}) => Promise<void> | void,
 ): Promise<void> {
-	const bootstrap = parseRoomBootstrapBlock(systemPrompt ?? "");
+	const bootstrap = parseRoomBootstrapFromEnv();
 	if (!bootstrap) return;
 	const existing = getActiveRoom(sessionId);
 	if (
@@ -755,7 +755,7 @@ export async function resolveAccessibleRoom(
 	if (current) return current;
 
 	const systemPrompt = ctx.getSystemPrompt?.() ?? "";
-	const bootstrap = parseRoomBootstrapBlock(systemPrompt);
+	const bootstrap = parseRoomBootstrapFromEnv();
 	if (bootstrap) {
 		await ensureRoomMutationClientConnected(
 			bootstrap.roomDir,

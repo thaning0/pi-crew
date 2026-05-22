@@ -531,6 +531,17 @@ async function selectSpawnAdapter(
 	ctx: RoomExecutionContext,
 	adapters: { pi: RoomSpawnAdapter; paseo: RoomSpawnAdapter },
 ): Promise<RoomSpawnAdapter> {
+	// If this session is running inside Paseo (PASEO_AGENT_ID is set),
+	// prefer the paseo adapter so sub-agents are visible in the Paseo UI.
+	// hasUI alone is not sufficient — when the web UI IS Paseo, we must
+	// delegate to the Paseo daemon, not fork raw pi child processes.
+	if (process.env.PASEO_AGENT_ID?.trim()) {
+		const paseoAvailable = (await adapters.paseo.isAvailable?.(ctx)) ?? true;
+		if (paseoAvailable) {
+			return adapters.paseo;
+		}
+	}
+
 	if (ctx.hasUI) {
 		return adapters.pi;
 	}
@@ -752,6 +763,8 @@ export async function queueCrewAdd(
 				tools: typedAgent.tools
 					? [...typedAgent.tools, ...crewMessageToolNames]
 					: typedAgent.tools,
+				bootstrap,
+				parentPaseoAgentId: process.env.PASEO_AGENT_ID?.trim() || undefined,
 				...(initialTaskBoard
 					? { initialTask: { task: params.task!, boardMessageSeq: initialTaskBoard.boardMessageSeq } }
 					: {}),

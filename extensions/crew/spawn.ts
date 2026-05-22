@@ -7,7 +7,7 @@ import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRoomLogger, consoleError } from "./logger.ts";
 import { updateRoomMemberState } from "./storage.ts";
-import type { MemberLivenessObservation, RoomExecutionContext, RoomMemberState, RoomSpawnAdapter, SpawnMemberRequest, SpawnMemberResult } from "./types.ts";
+import type { MemberLivenessObservation, RoomBootstrap, RoomExecutionContext, RoomMemberState, RoomSpawnAdapter, SpawnMemberRequest, SpawnMemberResult } from "./types.ts";
 import { AdapterUnavailableError, SpawnFailedError } from "./errors.ts";
 
 async function sleep(ms: number): Promise<void> {
@@ -86,60 +86,10 @@ interface PaseoDaemonHelpers {
 	}>;
 }
 
-export type PaseoSpawnRecoveryContract = "fallback";
-
-const PASEO_SPAWN_RECOVERY_CONTRACT: PaseoSpawnRecoveryContract = "fallback";
 const PASEO_PARENT_AGENT_LABEL = "paseo.parent-agent-id";
 
 async function resolvePaseoParentAgentId(request: SpawnMemberRequest): Promise<string | null> {
-	const envParentAgentId = process.env.PASEO_AGENT_ID?.trim();
-	if (envParentAgentId) return envParentAgentId;
-
-	const parentSessionId = request.parentSessionId?.trim();
-	if (!parentSessionId) return null;
-
-	const agentsRoot = path.join(os.homedir(), ".paseo", "agents");
-	try {
-		const buckets = await fsp.readdir(agentsRoot, { withFileTypes: true });
-		for (const bucket of buckets) {
-			if (!bucket.isDirectory()) continue;
-			const bucketPath = path.join(agentsRoot, bucket.name);
-			const entries = await fsp.readdir(bucketPath, { withFileTypes: true });
-			for (const entry of entries) {
-				if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-				const recordPath = path.join(bucketPath, entry.name);
-				try {
-					const record = JSON.parse(await fsp.readFile(recordPath, "utf8")) as {
-						id?: string;
-						runtimeInfo?: { sessionId?: string | null };
-					};
-					if (record.runtimeInfo?.sessionId !== parentSessionId) continue;
-					const recordId = record.id?.trim();
-					return recordId && recordId.length > 0 ? recordId : entry.name.replace(/\.json$/, "");
-				} catch {
-					continue;
-				}
-			}
-		}
-	} catch {
-		return null;
-	}
-
-	return null;
-}
-
-/**
- * Task 0 gate result: the current paseo daemon helper surface only supports
- * create/cancel/delete/fetch by agent id. There is no stable label scan or
- * late-handle recovery API, so timeout/orphan cleanup must stay on the
- * fallback contract until a discovery surface is added.
- */
-export function getPaseoSpawnRecoveryContract(): PaseoSpawnRecoveryContract {
-	return PASEO_SPAWN_RECOVERY_CONTRACT;
-}
-
-export function supportsPaseoOrphanRediscovery(): boolean {
-	return false;
+	return request.parentPaseoAgentId ?? process.env.PASEO_AGENT_ID?.trim() ?? null;
 }
 
 let paseoDaemonHelpersPromise: Promise<PaseoDaemonHelpers> | null = null;
@@ -313,12 +263,27 @@ export function createPiMemberAdapter(options?: {
 			if (request.tools && request.tools.length > 0) args.push("--tools", request.tools.join(","));
 			if (materialized.promptPath) args.push("--append-system-prompt", materialized.promptPath);
 
+			// Build room env vars for the spawned Pi process
+			const roomEnv: Record<string, string> = {
+				...process.env as Record<string, string>,
+			};
+			if (request.bootstrap) {
+				const b = request.bootstrap;
+				roomEnv.PI_ROOM_ID = b.roomId;
+				roomEnv.PI_ROOM_DIR = b.roomDir;
+				roomEnv.PI_ROOM_MEMBER_NAME = b.memberName;
+				roomEnv.PI_ROOM_MEMBER_TYPE = b.memberType;
+				if (b.token) roomEnv.PI_ROOM_BOOTSTRAP_TOKEN = b.token;
+				if (b.ownerName) roomEnv.PI_ROOM_OWNER_NAME = b.ownerName;
+				if (b.ownerSessionId) roomEnv.PI_ROOM_OWNER_SESSION_ID = b.ownerSessionId;
+			}
+
 			const invocation = (request.getInvocation ?? getPiInvocation)(args);
 			const child = spawnProcess(invocation.command, invocation.args, {
 				cwd: request.cwd,
 				shell: false,
 				stdio: ["pipe", "ignore", "ignore"],
-				env: { ...process.env },
+				env: roomEnv,
 			});
 
 			try {
@@ -390,6 +355,21 @@ export function createPiMemberAdapter(options?: {
 			}
 		},
 	};
+}
+
+/** Build PI_ROOM_* env vars from a RoomBootstrap.
+ *  For Paseo adapter — only includes room-specific vars (not process.env
+ *  spread, since Paseo's env field is additive/merged by the daemon). */
+export function buildPaseoRoomEnv(bootstrap: RoomBootstrap): Record<string, string> {
+	const env: Record<string, string> = {};
+	env.PI_ROOM_ID = bootstrap.roomId;
+	env.PI_ROOM_DIR = bootstrap.roomDir;
+	env.PI_ROOM_MEMBER_NAME = bootstrap.memberName;
+	env.PI_ROOM_MEMBER_TYPE = bootstrap.memberType;
+	if (bootstrap.token) env.PI_ROOM_BOOTSTRAP_TOKEN = bootstrap.token;
+	if (bootstrap.ownerName) env.PI_ROOM_OWNER_NAME = bootstrap.ownerName;
+	if (bootstrap.ownerSessionId) env.PI_ROOM_OWNER_SESSION_ID = bootstrap.ownerSessionId;
+	return env;
 }
 
 export function createPaseoPiMemberAdapter(): RoomSpawnAdapter {
@@ -504,9 +484,14 @@ export function createPaseoPiMemberAdapter(): RoomSpawnAdapter {
 					? `Your assigned task: ${request.initialTask.task}\n\nWhen finished, call: crew_reply(seq=#${request.initialTask.boardMessageSeq}, kind="completion", summary="one-line result", content="full detailed report")`
 					: `You are "${request.memberLabel ?? request.memberName}". Wait for messages.`;
 
+				const roomEnv: Record<string, string> | undefined = request.bootstrap
+					? buildPaseoRoomEnv(request.bootstrap)
+					: undefined;
+
 				const snapshot = await client.createAgent({
 					provider: "pi",
 					cwd: request.cwd,
+					...(roomEnv ? { env: roomEnv } : {}),
 					...(request.model ? { model: request.model } : {}),
 					...(request.thinkingLevel ? { thinkingOptionId: request.thinkingLevel } : {}),
 					...(parentAgentId ? { labels: { [PASEO_PARENT_AGENT_LABEL]: parentAgentId } } : {}),

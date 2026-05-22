@@ -5,8 +5,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import {
 	listRoomAgentTypes,
 	loadTypedRoomAgentDefinition,
-	parseRoomBootstrapBlock,
-	parseRoomToolsMarker,
+	parseRoomBootstrapFromEnv,
 } from "./bootstrap.ts";
 import {
 	activateBootstrapRoom,
@@ -83,20 +82,6 @@ import {
 
 export { resetActiveRoomsForTests } from "./lifecycle.ts";
 
-/** Known promptGuidelines for built-in Pi tools, keyed by tool name.
- *  Replicated here because ToolInfo from pi.getAllTools() does not expose
- *  promptGuidelines. Used to rebuild the Guidelines section with only the
- *  guidelines relevant to the sub-agent's allowed tools. */
-const BUILTIN_TOOL_GUIDELINES: Record<string, string[]> = {
-	read: ["Use read to examine files instead of cat or sed."],
-	edit: [
-		"Use edit for precise changes (edits[].oldText must match exactly)",
-		"When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
-		"Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
-		"Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
-	],
-	write: ["Use write only for new files or complete rewrites."],
-};
 
 /** Orchestrator-specific instructions, loaded once at module init. */
 let orchestratorPromptBody: string | null = null;
@@ -178,14 +163,7 @@ export default function roomExtension(
 
 		// Parse bootstrap early: if this is a member session, filter tools BEFORE
 		// activateBootstrapRoom triggers any turns via deliverRoomMessage.
-		const bootstrap = parseRoomBootstrapBlock(systemPrompt);
-		// NOTE: Do NOT call pi.setActiveTools() here. setActiveTools internally
-		// calls _rebuildSystemPrompt() which strips the bootstrap block from
-		// _baseSystemPrompt. When before_agent_start fires later, it reads
-		// _baseSystemPrompt (now without bootstrap) and can't determine the
-		// correct tool set — falling back to all tools.
-		// Tool filtering is handled in before_agent_start instead, using
-		// activeRoom.memberType (stored during activateBootstrapRoom).
+		const bootstrap = parseRoomBootstrapFromEnv();
 
 		// Set up mutation client BEFORE activateBootstrapRoom so that
 		// markMemberJoined routes through the owner's proxy (not file lock).
@@ -263,7 +241,7 @@ export default function roomExtension(
 		if (hasResolvablePrompt) {
 			clearOwnerClassificationUnavailable(sessionId);
 		}
-		const bootstrap = parseRoomBootstrapBlock(systemPrompt);
+		const bootstrap = parseRoomBootstrapFromEnv();
 		if (bootstrap) {
 			clearOwnerClassificationReady(sessionId);
 		}
@@ -286,7 +264,7 @@ export default function roomExtension(
 		// Fallback: create room for owner sessions if session_start didn't
 		// (e.g., session_start fired before cwd was available, or lock was contended).
 		if (!activeRoom) {
-			const bootstrap = parseRoomBootstrapBlock(systemPrompt);
+			const bootstrap = parseRoomBootstrapFromEnv();
 			if (hasResolvablePrompt && !bootstrap) {
 				try {
 					const ensured = await ensureOwnerRoom({
@@ -384,178 +362,10 @@ export default function roomExtension(
 			}
 			pi.setActiveTools(allowed);
 
-			// Cache getAllTools() result — called multiple times below in a hot path
-			// (before_agent_start fires every turn). Avoids redundant array creation.
-			const allTools = pi.getAllTools();
-
-			// Build the correct tools section from the allowed set.
-			// We cannot rely on _rebuildSystemPrompt because for paseo,
-			// applySystemPrompt appends room member instructions AFTER
-			// _rebuildSystemPrompt runs, and ctx.getSystemPrompt() returns
-			// a cached local variable in emitBeforeAgentStart.
-			const toolList = allTools
-				.filter((t: any) => allowed.includes(t.name))
-				.map(
-					(t: any) =>
-						`- ${t.name}: ${t.description.split("\n")[0].slice(0, 120)}`,
-				)
-				.join("\n");
-
-			// Rebuild guidelines based on allowed tools (not all tools).
-			// buildSystemPrompt constructs guidelines from:
-			//   1) per-tool promptGuidelines (built-in + extension tools),
-			//   2) framework-level checks (bash/grep/find/ls availability),
-			//   3) always-present guidelines.
-			// Since ToolInfo from pi.getAllTools() does not expose
-			// promptGuidelines, we use a hybrid strategy:
-			//   - Built-in tool guidelines: rebuilt from BUILTIN_TOOL_GUIDELINES
-			//     (only for tools in the allowed set)
-			//   - Extension tool guidelines: preserved from the existing prompt
-			//     (any guideline NOT matching a known built-in or framework text)
-			//   - Framework-level: recomputed from the allowed set
-			//   - Always-present: always included
-
-			// Collect known built-in guideline texts, split by allowed/disallowed
-			const allowedBuiltinTexts = new Set<string>();
-			const disallowedBuiltinTexts = new Set<string>();
-			for (const toolName of allTools.map((t: any) => t.name as string)) {
-				const builtin = BUILTIN_TOOL_GUIDELINES[toolName];
-				if (!builtin) continue;
-				if (allowed.includes(toolName)) {
-					for (const g of builtin) allowedBuiltinTexts.add(g);
-				} else {
-					for (const g of builtin) disallowedBuiltinTexts.add(g);
-				}
-			}
-
-			// Known framework-level guideline texts (recomputed below)
-			const frameworkTexts = new Set([
-				"Use bash for file operations like ls, rg, find",
-				"Prefer grep/find/ls tools over bash for file exploration (faster, respects .gitignore)",
-			]);
-
-			// Known always-present texts (re-added below)
-			const alwaysPresentTexts = new Set([
-				"Be concise in your responses",
-				"Show file paths clearly when working with files",
-			]);
-
-			// Parse existing guidelines from the original prompt to preserve
-			// extension tool guidelines that don't fall into the above categories.
-			const guidelinesMatch = systemPrompt.match(
-				/\nGuidelines:\n((?:- [^\n]+\n)*)/,
-			);
-			const existingGuidelines: string[] = [];
-			if (guidelinesMatch) {
-				for (const line of guidelinesMatch[1].split("\n")) {
-					if (line.startsWith("- ")) existingGuidelines.push(line.slice(2));
-				}
-			}
-
-			// Build final guidelines
-			const guidelines: string[] = [];
-			const guidelinesSet = new Set<string>();
-			const addGuideline = (g: string) => {
-				if (!guidelinesSet.has(g)) {
-					guidelinesSet.add(g);
-					guidelines.push(g);
-				}
-			};
-
-			// 1) Built-in guidelines for allowed tools
-			for (const g of allowedBuiltinTexts) addGuideline(g);
-
-			// 2) Extension guidelines: for each guideline that is NOT built-in /
-			//    framework / always-present, check if it mentions any tool name
-			//    that is not in the allowed set. If it does, remove it.
-			//    This correctly filters guidelines for e.g. memory_note from
-			//    sub-agents that don't have memory tools.
-			const allToolNames = allTools.map((t: any) => t.name as string);
-			for (const g of existingGuidelines) {
-				if (disallowedBuiltinTexts.has(g)) continue;
-				if (frameworkTexts.has(g)) continue;
-				if (alwaysPresentTexts.has(g)) continue;
-				// Check for tool-name references; skip if any referenced tool is disallowed
-				let mentionsDisallowed = false;
-				for (const toolName of allToolNames) {
-					const esc = toolName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-					if (new RegExp(`\\b${esc}\\b`).test(g)) {
-						if (!allowed.includes(toolName)) {
-							mentionsDisallowed = true;
-							break;
-						}
-					}
-				}
-				if (!mentionsDisallowed) addGuideline(g);
-			}
-
-			// 3) Framework-level guidelines (mirrors buildSystemPrompt logic)
-			const hasBash = allowed.includes("bash");
-			const hasGrep = allowed.includes("grep");
-			const hasFind = allowed.includes("find");
-			const hasLs = allowed.includes("ls");
-			if (hasBash && !hasGrep && !hasFind && !hasLs) {
-				addGuideline("Use bash for file operations like ls, rg, find");
-			} else if (hasBash && (hasGrep || hasFind || hasLs)) {
-				addGuideline(
-					"Prefer grep/find/ls tools over bash for file exploration (faster, respects .gitignore)",
-				);
-			}
-
-			// 4) Always-present guidelines
-			addGuideline("Be concise in your responses");
-			addGuideline("Show file paths clearly when working with files");
-
-			const newGuidelines = guidelines.map((g) => `- ${g}`).join("\n");
-
-			// Replace the original "Available tools" + "Guidelines" sections
-			// in-place within the prompt, rather than appending at the end.
-			// This keeps the tool list and guidelines at the correct position.
-			// The regex matches both the original format ("Available tools:")
-			// and the already-transformed format ("## Available Tools (N)") so
-			// it works across multiple turns.
-			const FIXED_TOOLS_REGEX =
-				/\n(?:## )?Available tools(?::|\(\d+\))\n(?:- [^\n]+\n)+\nIn addition to the tools above, you may have access to other custom tools depending on the project\.\n\nGuidelines:\n(?:- [^\n]+\n)*\nPi documentation \(/;
-			let fixed: string;
-			if (FIXED_TOOLS_REGEX.test(systemPrompt)) {
-				fixed = systemPrompt
-					.replace(
-						FIXED_TOOLS_REGEX,
-						`\n## Available Tools (${allowed.length})\n${toolList}\n\nGuidelines:\n${newGuidelines}\n\nPi documentation (`,
-					)
-					// Strip bootstrap and internal markers.
-					.replace(
-						/<!-- PI_ROOM_BOOTSTRAP\n[\s\S]*?\nPI_ROOM_BOOTSTRAP -->\n*/g,
-						"",
-					)
-					.replace(/<!-- PI_ROOM_TOOLS:[^\n]*PI_ROOM_TOOLS -->\n*/g, "")
-					.trim();
-			} else {
-				// Fallback: prompt structure is non-standard (custom prompt).
-				// This should not happen under normal operation; it indicates the
-				// framework's buildSystemPrompt output format changed.
-				createRoomLogger(null, "room").error(
-					"system prompt structure changed — tool filtering regex did not match",
-					{ detail: "Sub-agent tool list and guidelines appended at end. Update FIXED_TOOLS_REGEX in extensions/crew/index.ts." },
-				);
-				// Strip old tools + guidelines sections if present, append rebuilt ones.
-				fixed = systemPrompt
-					.replace(
-						/\nAvailable tools:\n(?:- [^\n]+\n)+\nIn addition to the tools above, you may have access to other custom tools depending on the project\.\n/g,
-						"\n",
-					)
-					.replace(/\nGuidelines:\n(?:- [^\n]+\n)*\n/g, "\n")
-					.replace(
-						/<!-- PI_ROOM_BOOTSTRAP\n[\s\S]*?\nPI_ROOM_BOOTSTRAP -->\n*/g,
-						"",
-					)
-					.replace(/<!-- PI_ROOM_TOOLS:[^\n]*PI_ROOM_TOOLS -->\n*/g, "")
-					.trim();
-				fixed =
-					fixed +
-					`\n\n## Available Tools (${allowed.length})\n${toolList}\n\nGuidelines:\n${newGuidelines}`;
-			}
-			return { systemPrompt: fixed };
+			// Tool filtering via setActiveTools() is sufficient.
+			// With no bootstrap block in the system prompt (env vars carry metadata),
+			// _rebuildSystemPrompt() correctly rebuilds the tools list and guidelines.
+			// No manual prompt patching needed.
 		}
 
 		// ── Owner (lead agent): inject orchestrator-specific instructions ──

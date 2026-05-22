@@ -2,13 +2,7 @@ import { loadAgentDefinition, listAgentTypes, type AgentDefinition } from "./age
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { RoomBootstrap } from "./types.ts";
-
-const START_MARKER = "<!-- PI_ROOM_BOOTSTRAP";
-const END_MARKER = "PI_ROOM_BOOTSTRAP -->";
-/** Marker embedded in room member system prompt so session_start can filter
- *  tools even before the bootstrap block is available (paseo timing). */
-const TOOLS_MARKER = "<!-- PI_ROOM_TOOLS:";
-const TOOLS_MARKER_END = "PI_ROOM_TOOLS -->";
+import { ROOM_ENV } from "./types.ts";
 
 let roomMemberSkillBody: string | null = null;
 
@@ -35,26 +29,6 @@ export function listRoomAgentTypes(cwd?: string): Array<{ type: string; descript
 	return listAgentTypes(cwd);
 }
 
-function isRoomBootstrap(value: unknown): value is RoomBootstrap {
-	if (!value || typeof value !== "object") return false;
-	const candidate = value as Record<string, unknown>;
-	return (
-		candidate.version === 1 &&
-		typeof candidate.roomId === "string" &&
-		typeof candidate.roomDir === "string" &&
-		typeof candidate.memberName === "string" &&
-		typeof candidate.memberType === "string" &&
-		typeof candidate.ownerName === "string" &&
-		typeof candidate.ownerSessionId === "string" &&
-		typeof candidate.token === "string" &&
-		(candidate.spawnTaskId === undefined || candidate.spawnTaskId === null || typeof candidate.spawnTaskId === "string")
-	);
-}
-
-export function buildRoomBootstrapBlock(bootstrap: RoomBootstrap): string {
-	return `${START_MARKER}\n${JSON.stringify(bootstrap)}\n${END_MARKER}`;
-}
-
 export function buildRoomMemberSystemPrompt(
 	bootstrap: RoomBootstrap,
 	typedAgent?: TypedRoomAgentDefinition | null,
@@ -63,10 +37,6 @@ export function buildRoomMemberSystemPrompt(
 ): string {
 	const effectiveTypedAgent = typedAgent !== undefined ? typedAgent : loadTypedRoomAgentDefinition(bootstrap.memberType, cwd);
 	const skillBody = getRoomMemberSkillBody();
-	const crewMessageToolNames = ["crew_tell", "crew_messages", "crew_reply", "crew_read", "crew_who", "crew_tasks"];
-	const allowedTools = effectiveTypedAgent?.tools && effectiveTypedAgent.tools.length > 0
-		? [...new Set([...effectiveTypedAgent.tools, ...crewMessageToolNames])]
-		: null;
 	return [
 		`You are "${bootstrap.memberName}", a room member of type "${bootstrap.memberType}" in coordination room "${bootstrap.roomId}".`,
 		memberLabel && memberLabel !== bootstrap.memberName
@@ -75,42 +45,31 @@ export function buildRoomMemberSystemPrompt(
 		`IMPORTANT: When your task is complete, report results via crew_reply — use summary for a one-line result, and content for the full report. Do not describe your final results in plain text; that output is not automatically delivered to the task owner. During work, normal tool use and progress output is fine.`,
 		skillBody || null,
 		effectiveTypedAgent?.systemPrompt ? `---\n## Your Role-Specific Instructions\n${effectiveTypedAgent.systemPrompt}` : null,
-		// Embed allowed tools as a marker so session_start can filter even
-		// before the bootstrap block is parsed (needed for paseo timing).
-		allowedTools ? `${TOOLS_MARKER}${allowedTools.join(",")}${TOOLS_MARKER_END}` : null,
-		buildRoomBootstrapBlock(bootstrap),
 	].filter((section): section is string => Boolean(section && section.trim().length > 0)).join("\n\n");
 }
 
-/** Parse the tools marker embedded by buildRoomMemberSystemPrompt.
- *  Returns allowed tool names, or null if no marker found. */
-export function parseRoomToolsMarker(systemPrompt: string | null | undefined): string[] | null {
-	if (!systemPrompt) return null;
-	const startIndex = systemPrompt.indexOf(TOOLS_MARKER);
-	if (startIndex === -1) return null;
-	const contentStart = startIndex + TOOLS_MARKER.length;
-	const endIndex = systemPrompt.indexOf(TOOLS_MARKER_END, contentStart);
-	if (endIndex === -1) return null;
-	const raw = systemPrompt.slice(contentStart, endIndex).trim();
-	if (!raw) return null;
-	return raw.split(",").map((t) => t.trim()).filter(Boolean);
-}
+/** Try to construct a RoomBootstrap from environment variables.
+ *  Returns null if required env vars are missing (not a room member session). */
+export function parseRoomBootstrapFromEnv(): RoomBootstrap | null {
+	const roomId = process.env[ROOM_ENV.ROOM_ID];
+	const roomDir = process.env[ROOM_ENV.ROOM_DIR];
+	const memberName = process.env[ROOM_ENV.MEMBER_NAME];
+	const memberType = process.env[ROOM_ENV.MEMBER_TYPE];
+	const token = process.env[ROOM_ENV.BOOTSTRAP_TOKEN];
+	const ownerName = process.env[ROOM_ENV.OWNER_NAME];
+	const ownerSessionId = process.env[ROOM_ENV.OWNER_SESSION_ID];
 
-export function parseRoomBootstrapBlock(systemPrompt: string | null | undefined): RoomBootstrap | null {
-	if (!systemPrompt) return null;
-	const startIndex = systemPrompt.indexOf(START_MARKER);
-	if (startIndex === -1) return null;
-	const jsonStart = startIndex + START_MARKER.length;
-	const endIndex = systemPrompt.indexOf(END_MARKER, jsonStart);
-	if (endIndex === -1) return null;
+	if (!roomId || !roomDir || !memberName || !memberType) return null;
 
-	const raw = systemPrompt.slice(jsonStart, endIndex).trim();
-	if (!raw) return null;
-
-	try {
-		const parsed = JSON.parse(raw);
-		return isRoomBootstrap(parsed) ? parsed : null;
-	} catch {
-		return null;
-	}
+	return {
+		version: 1,
+		roomId,
+		roomDir,
+		memberName,
+		memberType,
+		ownerName: ownerName ?? "lead",
+		ownerSessionId: ownerSessionId ?? "",
+		token: token ?? "",
+		spawnTaskId: null,
+	};
 }
