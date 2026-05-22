@@ -11,6 +11,7 @@ Manage multi-agent workflows through a persistent room. You (the owner) spawn su
 
 - Always check what role is available before adding a member:
 - Use `crew_tell` with `kind: "task"` directed to a specific member to assign work, use context for task details and instructions. Return: `<seq>` — the message sequence number. Save this to track the task.
+- When assigning tasks, provide references (files paths, URLs or previous messages `#n`).
 - Always assign tasks to existing `idle` members with appropriate capabilities. Check `crew_who` to verify member state before assigning. Reuse agents when possible to preserve context.
 - Agents can receive `info`/`question` messages at any time without affecting their task state, which are pure communication that the agent can read and incorporate into its ongoing work.
 - Member status: `spawning` (still being created), `idle` (ready for task), `running` (working in a task), `error` (task blocked), `stopping` (being stopped), `chatting` (agent is in its turn but not executing a task: completing wrap-up after task, or engaging in agent-to-agent/owner conversation).
