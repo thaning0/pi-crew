@@ -1024,6 +1024,7 @@ export async function reapRoom(roomDir: string, adapters: RoomAdapterMap): Promi
 		if (!stillStale) {
 			return;
 		}
+		log.info("room reaped", { roomId: metadata.roomId });
 		await closeLogStream(roomDir);
 		// Clean up module-level dependency index entries for this room (H2)
 		clearRoomDeps(roomDir);
@@ -1031,7 +1032,6 @@ export async function reapRoom(roomDir: string, adapters: RoomAdapterMap): Promi
 			log.error("clear owner room index failed", { roomId: snapshot.metadata.roomId, error: String(err) });
 		});
 		await fs.rm(roomDir, { recursive: true, force: true });
-		log.info("room reaped", { roomId: metadata.roomId });
 		deleted = true;
 	});
 
