@@ -1,6 +1,6 @@
 # pi-crew
 
-Multi-agent crew orchestration extension for [pi](https://github.com/mariozechner/pi) — spawn subagents, assign tasks, and coordinate collaboration via a persistent room with git worktree isolation.
+Multi-agent crew orchestration extension for [pi](https://github.com/earendil-works/pi) — spawn subagents, assign tasks, and coordinate collaboration via a persistent room with git worktree isolation.
 
 ## Features
 
