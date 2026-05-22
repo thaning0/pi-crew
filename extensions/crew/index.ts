@@ -833,13 +833,7 @@ export default function roomExtension(
 				);
 			}
 		}
-		if (activeRoom.role === "owner") {
-			log.info("owner session shutting down, reaping room");
-			await reapRoom(activeRoom.roomDir, adapters).catch((err) =>
-				log.error("shutdown reap room failed", { error: String(err) }),
-			);
-		}
-		// Shut down mutation proxy if running
+		// Shut down mutation proxy if running (before reaping room, so logger still works)
 		if (activeRoom.proxyServer) {
 			log.info("stopping mutation proxy");
 			await activeRoom.proxyServer
@@ -848,6 +842,12 @@ export default function roomExtension(
 					log.error("mutation proxy stop failed", { error: String(err) }),
 				);
 			deleteRoomProxyServer(activeRoom.roomDir);
+		}
+		if (activeRoom.role === "owner") {
+			log.info("owner session shutting down, reaping room");
+			await reapRoom(activeRoom.roomDir, adapters).catch((err) =>
+				log.error("shutdown reap room failed", { error: String(err) }),
+			);
 		}
 		if (activeRoom.mutationClient) {
 			activeRoom.mutationClient.disconnect();
