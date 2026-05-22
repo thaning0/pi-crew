@@ -7,7 +7,7 @@ import * as bootstrapModule from "./bootstrap.ts";
 import { buildRoomBootstrapBlock } from "./bootstrap.ts";
 import roomExtension from "./index.ts";
 import { getActiveRoom, resetActiveRoomsForTests, setActiveRoom } from "./lifecycle.ts";
-import { createPaseoPiMemberAdapter } from "./spawn.ts";
+import { createPiMemberAdapter, createPaseoPiMemberAdapter } from "./spawn.ts";
 import { executeCrewRemove, executeCrewAdd } from "./tools.ts";
 import { reconcileSpawnTimeouts } from "./watchdog.ts";
 import * as worktreeModule from "./worktree.ts";
@@ -22,7 +22,8 @@ import {
 	readSpawnJob,
 	writeRoomMemberState,
 } from "./storage.ts";
-import type { RoomBootstrap, RoomMemberState } from "./types.ts";
+import { EventEmitter } from "node:events";
+import type { RoomBootstrap, RoomMemberState, SpawnMemberRequest } from "./types.ts";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 const originalHomeEnv = process.env.HOME;
@@ -1822,5 +1823,52 @@ describe("createPaseoPiMemberAdapter", () => {
 			assert.equal(member.spawnTaskId, null);
 			assert.match(member.lastError ?? "", /late spawn success cleanup failed/i);
 		});
+	});
+
+	it("passes PI_ROOM_* env vars to the spawned child process", async () => {
+		const bootstrap: RoomBootstrap = {
+			version: 1,
+			roomId: "room-test-1",
+			roomDir: "/tmp/rooms/room-test-1",
+			memberName: "worker_abc123",
+			memberType: "worker",
+			ownerName: "lead",
+			ownerSessionId: "session-xyz",
+			token: "tok-123",
+			spawnTaskId: "task-1",
+		};
+
+		let capturedEnv: Record<string, string | undefined> | undefined;
+		const mockSpawn = ((_cmd: string, _args: string[], opts: { env?: Record<string, string> }) => {
+			capturedEnv = opts.env;
+			const child = new EventEmitter() as any;
+			child.pid = 12345;
+			child.stdin = new EventEmitter();
+			child.stdin.writable = true;
+			child.stdin.write = () => true;
+			process.nextTick(() => child.emit("spawn"));
+			return child;
+		}) as any;
+
+		const adapter = createPiMemberAdapter({ spawnProcess: mockSpawn });
+		await adapter.spawn({
+			roomDir: bootstrap.roomDir,
+			roomId: bootstrap.roomId,
+			memberName: bootstrap.memberName,
+			memberType: bootstrap.memberType,
+			cwd: "/tmp",
+			bootstrap,
+		});
+
+		assert.ok(capturedEnv);
+		assert.equal(capturedEnv!.PI_ROOM_ID, "room-test-1");
+		assert.equal(capturedEnv!.PI_ROOM_DIR, "/tmp/rooms/room-test-1");
+		assert.equal(capturedEnv!.PI_ROOM_MEMBER_NAME, "worker_abc123");
+		assert.equal(capturedEnv!.PI_ROOM_MEMBER_TYPE, "worker");
+		assert.equal(capturedEnv!.PI_ROOM_BOOTSTRAP_TOKEN, "tok-123");
+		assert.equal(capturedEnv!.PI_ROOM_OWNER_NAME, "lead");
+		assert.equal(capturedEnv!.PI_ROOM_OWNER_SESSION_ID, "session-xyz");
+		// Parent env should be inherited
+		assert.equal(capturedEnv!.PATH, process.env.PATH);
 	});
 });

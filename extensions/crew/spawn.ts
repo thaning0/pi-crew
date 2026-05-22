@@ -313,12 +313,27 @@ export function createPiMemberAdapter(options?: {
 			if (request.tools && request.tools.length > 0) args.push("--tools", request.tools.join(","));
 			if (materialized.promptPath) args.push("--append-system-prompt", materialized.promptPath);
 
+			// Build room env vars for the spawned Pi process
+			const roomEnv: Record<string, string> = {
+				...process.env as Record<string, string>,
+			};
+			if (request.bootstrap) {
+				const b = request.bootstrap;
+				roomEnv.PI_ROOM_ID = b.roomId;
+				roomEnv.PI_ROOM_DIR = b.roomDir;
+				roomEnv.PI_ROOM_MEMBER_NAME = b.memberName;
+				roomEnv.PI_ROOM_MEMBER_TYPE = b.memberType;
+				if (b.token) roomEnv.PI_ROOM_BOOTSTRAP_TOKEN = b.token;
+				if (b.ownerName) roomEnv.PI_ROOM_OWNER_NAME = b.ownerName;
+				if (b.ownerSessionId) roomEnv.PI_ROOM_OWNER_SESSION_ID = b.ownerSessionId;
+			}
+
 			const invocation = (request.getInvocation ?? getPiInvocation)(args);
 			const child = spawnProcess(invocation.command, invocation.args, {
 				cwd: request.cwd,
 				shell: false,
 				stdio: ["pipe", "ignore", "ignore"],
-				env: { ...process.env },
+				env: roomEnv,
 			});
 
 			try {
