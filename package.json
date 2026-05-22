@@ -7,7 +7,7 @@
   "license": "MIT",
   "type": "commonjs",
   "pi": {
-    "extensions": ["./extensions/crew"],
+    "extensions": ["./extensions/crew", "./extensions/builtin-tools.ts", "./extensions/todo.ts", "./extensions/wait.ts"],
     "skills": ["./skills"],
     "prompts": ["./prompts"]
   },
