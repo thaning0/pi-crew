@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRoomLogger, consoleError } from "./logger.ts";
 import { updateRoomMemberState } from "./storage.ts";
 import type { MemberLivenessObservation, RoomExecutionContext, RoomMemberState, RoomSpawnAdapter, SpawnMemberRequest, SpawnMemberResult } from "./types.ts";
@@ -146,8 +146,8 @@ let paseoDaemonHelpersPromise: Promise<PaseoDaemonHelpers> | null = null;
 let paseoDaemonHelpersRoot: string | null = null;
 
 function resolveRoomExtensionPath(): string {
-	const agentDir = process.env.PI_CODING_AGENT_DIR?.trim() || path.join(os.homedir(), ".pi", "agent");
-	return path.join(agentDir, "extensions", "crew", "index.ts");
+	// Resolve relative to this extension's own location — self-contained package
+	return fileURLToPath(new URL("./index.ts", import.meta.url));
 }
 
 function normalizeCliOverride(): string | null {
