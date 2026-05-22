@@ -27,12 +27,12 @@ function getRoomMemberSkillBody(): string {
 
 export type TypedRoomAgentDefinition = AgentDefinition;
 
-export function loadTypedRoomAgentDefinition(memberType: string): TypedRoomAgentDefinition | null {
-	return loadAgentDefinition(memberType);
+export function loadTypedRoomAgentDefinition(memberType: string, cwd?: string): TypedRoomAgentDefinition | null {
+	return loadAgentDefinition(memberType, cwd);
 }
 
-export function listRoomAgentTypes(): Array<{ type: string; description: string; tools?: string[] }> {
-	return listAgentTypes();
+export function listRoomAgentTypes(cwd?: string): Array<{ type: string; description: string; tools?: string[] }> {
+	return listAgentTypes(cwd);
 }
 
 function isRoomBootstrap(value: unknown): value is RoomBootstrap {
@@ -57,13 +57,15 @@ export function buildRoomBootstrapBlock(bootstrap: RoomBootstrap): string {
 
 export function buildRoomMemberSystemPrompt(
 	bootstrap: RoomBootstrap,
-	typedAgent: TypedRoomAgentDefinition | null = loadTypedRoomAgentDefinition(bootstrap.memberType),
+	typedAgent?: TypedRoomAgentDefinition | null,
 	memberLabel?: string,
+	cwd?: string,
 ): string {
+	const effectiveTypedAgent = typedAgent !== undefined ? typedAgent : loadTypedRoomAgentDefinition(bootstrap.memberType, cwd);
 	const skillBody = getRoomMemberSkillBody();
 	const crewMessageToolNames = ["crew_tell", "crew_messages", "crew_reply", "crew_read", "crew_who", "crew_tasks"];
-	const allowedTools = typedAgent?.tools && typedAgent.tools.length > 0
-		? [...new Set([...typedAgent.tools, ...crewMessageToolNames])]
+	const allowedTools = effectiveTypedAgent?.tools && effectiveTypedAgent.tools.length > 0
+		? [...new Set([...effectiveTypedAgent.tools, ...crewMessageToolNames])]
 		: null;
 	return [
 		`You are "${bootstrap.memberName}", a room member of type "${bootstrap.memberType}" in coordination room "${bootstrap.roomId}".`,
@@ -72,7 +74,7 @@ export function buildRoomMemberSystemPrompt(
 			: null,
 		`IMPORTANT: When your task is complete, report results via crew_reply — use summary for a one-line result, and content for the full report. Do not describe your final results in plain text; that output is not automatically delivered to the task owner. During work, normal tool use and progress output is fine.`,
 		skillBody || null,
-		typedAgent?.systemPrompt ? `---\n## Your Role-Specific Instructions\n${typedAgent.systemPrompt}` : null,
+		effectiveTypedAgent?.systemPrompt ? `---\n## Your Role-Specific Instructions\n${effectiveTypedAgent.systemPrompt}` : null,
 		// Embed allowed tools as a marker so session_start can filter even
 		// before the bootstrap block is parsed (needed for paseo timing).
 		allowedTools ? `${TOOLS_MARKER}${allowedTools.join(",")}${TOOLS_MARKER_END}` : null,

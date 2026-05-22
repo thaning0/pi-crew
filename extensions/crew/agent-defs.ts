@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
@@ -48,6 +49,24 @@ export interface AgentDefinition {
 	 *  When set, overrides the global PI_ROOM_MEMBER_HEARTBEAT_STALE_MS default (5000ms).
 	 *  Use for slow-starting agent types (e.g. flash-model agents behind rate-limited providers). */
 	heartbeatStaleMs?: number;
+}
+
+function getGlobalAgentsDir(): string {
+	return path.join(os.homedir(), ".pi", "crew_agents");
+}
+
+function getRepoAgentsDir(cwd: string): string {
+	return path.join(cwd, ".pi", "crew_agents");
+}
+
+function getSearchDirs(cwd?: string): string[] {
+	const dirs: string[] = [];
+	if (cwd !== undefined) {
+		dirs.push(getRepoAgentsDir(cwd));
+	}
+	dirs.push(getGlobalAgentsDir());
+	dirs.push(AGENTS_DIR);
+	return dirs;
 }
 
 function normalizeAgentType(agentType: string): string | null {
@@ -140,24 +159,30 @@ function parseMarkdownFrontmatter(content: string): { frontmatter: Record<string
 	};
 }
 
-export function loadAgentDefinition(agentType: string): AgentDefinition | null {
+export function loadAgentDefinition(agentType: string, cwd?: string): AgentDefinition | null {
 	const normalizedType = normalizeAgentType(agentType);
 	if (!normalizedType) return null;
 
-	if (agentDefinitionCache.has(normalizedType)) {
-		return agentDefinitionCache.get(normalizedType) ?? null;
+	const cacheKey = `${cwd ?? "__no_cwd__"}::${normalizedType}`;
+	if (agentDefinitionCache.has(cacheKey)) {
+		return agentDefinitionCache.get(cacheKey) ?? null;
 	}
 
-	try {
-		const content = fs.readFileSync(path.join(AGENTS_DIR, `${normalizedType}.md`), "utf8");
-		const { frontmatter, body } = parseMarkdownFrontmatter(content);
-		const definition = buildAgentDefinition(normalizedType, frontmatter, body);
-		agentDefinitionCache.set(normalizedType, definition);
-		return definition;
-	} catch {
-		agentDefinitionCache.set(normalizedType, null);
-		return null;
+	const searchDirs = getSearchDirs(cwd);
+	for (const dir of searchDirs) {
+		try {
+			const content = fs.readFileSync(path.join(dir, `${normalizedType}.md`), "utf8");
+			const { frontmatter, body } = parseMarkdownFrontmatter(content);
+			const definition = buildAgentDefinition(normalizedType, frontmatter, body);
+			agentDefinitionCache.set(cacheKey, definition);
+			return definition;
+		} catch {
+			// Try next directory
+		}
 	}
+
+	agentDefinitionCache.set(cacheKey, null);
+	return null;
 }
 
 export function parseAgentDefinitionForTest(content: string): AgentDefinition {
@@ -165,28 +190,34 @@ export function parseAgentDefinitionForTest(content: string): AgentDefinition {
 	return buildAgentDefinition("test-agent", frontmatter, body);
 }
 
-export function listAgentTypes(): Array<{ type: string; description: string; tools?: string[] }> {
+export function listAgentTypes(cwd?: string): Array<{ type: string; description: string; tools?: string[] }> {
+	const seen = new Set<string>();
 	const results: Array<{ type: string; description: string; tools?: string[] }> = [];
-	let entries: string[] = [];
-	try {
-		entries = fs.readdirSync(AGENTS_DIR);
-	} catch {
-		return results;
-	}
-	for (const entry of entries) {
-		if (!entry.endsWith(".md")) continue;
-		const type = entry.slice(0, -3);
-		if (!normalizeAgentType(type)) continue;
+
+	const searchDirs = getSearchDirs(cwd);
+	for (const dir of searchDirs) {
+		let entries: string[] = [];
 		try {
-			const content = fs.readFileSync(path.join(AGENTS_DIR, entry), "utf8");
-			const { frontmatter } = parseMarkdownFrontmatter(content);
-			results.push({
-				type,
-				description: typeof frontmatter.description === "string" ? frontmatter.description : "",
-				tools: normalizeToolList(frontmatter.tools),
-			});
+			entries = fs.readdirSync(dir);
 		} catch {
-			results.push({ type, description: "", tools: undefined });
+			continue;
+		}
+		for (const entry of entries) {
+			if (!entry.endsWith(".md")) continue;
+			const type = entry.slice(0, -3);
+			if (!normalizeAgentType(type) || seen.has(type)) continue;
+			seen.add(type);
+			try {
+				const content = fs.readFileSync(path.join(dir, entry), "utf8");
+				const { frontmatter } = parseMarkdownFrontmatter(content);
+				results.push({
+					type,
+					description: typeof frontmatter.description === "string" ? frontmatter.description : "",
+					tools: normalizeToolList(frontmatter.tools),
+				});
+			} catch {
+				results.push({ type, description: "", tools: undefined });
+			}
 		}
 	}
 	return results;
