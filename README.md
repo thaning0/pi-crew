@@ -23,6 +23,7 @@ Multi-agent crew orchestration extension for [pi](https://github.com/earendil-wo
 - **Mutation proxy** — Unix-socket based write serialization avoids file-lock contention between concurrent agents
 
 https://github.com/user-attachments/assets/9402942a-4b91-4936-82ef-e122d18623be
+
 https://github.com/user-attachments/assets/1c6a8520-812c-4f67-ad9f-8d6e3c1be9f6
 
 ## Install
