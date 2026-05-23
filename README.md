@@ -22,6 +22,21 @@ Multi-agent crew orchestration extension for [pi](https://github.com/earendil-wo
 - **Session recovery** — File-system persistence enables recovery across agent restarts
 - **Mutation proxy** — Unix-socket based write serialization avoids file-lock contention between concurrent agents
 
+<table>
+  <tr>
+    <td style="padding: 8px;">
+      <video controls width="100%">
+        <source src="https://github.com/user-attachments/assets/9402942a-4b91-4936-82ef-e122d18623be" type="video/mp4">
+      </video>
+    </td>
+    <td style="padding: 8px;">
+      <video controls width="100%">
+        <source src="https://github.com/user-attachments/assets/1c6a8520-812c-4f67-ad9f-8d6e3c1be9f6" type="video/mp4">
+      </video>
+    </td>
+  </tr>
+</table>
+
 ## Install
 
 ```bash
@@ -29,11 +44,6 @@ pi install git:https://github.com/thaning0/pi-crew.git
 ```
 
 This registers 4 extensions (`crew`, `builtin-tools`, `todo`, `wait`), 2 skills, and 8 agent prompt templates (plus support for custom agent types).
-
-
-https://github.com/user-attachments/assets/1c6a8520-812c-4f67-ad9f-8d6e3c1be9f6
-
-https://github.com/user-attachments/assets/9402942a-4b91-4936-82ef-e122d18623be
 
 ## Quick Start
 
