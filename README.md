@@ -1,3 +1,9 @@
+
+
+
+
+
+
 # pi-crew
 
 Multi-agent crew orchestration extension for [pi](https://github.com/earendil-works/pi) — spawn subagents, assign tasks, and coordinate collaboration via a persistent room with git worktree isolation.
@@ -23,6 +29,11 @@ pi install git:https://github.com/thaning0/pi-crew.git
 ```
 
 This registers 4 extensions (`crew`, `builtin-tools`, `todo`, `wait`), 2 skills, and 8 agent prompt templates (plus support for custom agent types).
+
+
+https://github.com/user-attachments/assets/1c6a8520-812c-4f67-ad9f-8d6e3c1be9f6
+
+https://github.com/user-attachments/assets/9402942a-4b91-4936-82ef-e122d18623be
 
 ## Quick Start
 
