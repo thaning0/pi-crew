@@ -13,7 +13,7 @@ Multi-agent crew orchestration extension for [pi](https://github.com/earendil-wo
 - **Snapshot merging** — The lead agent can merge, rebase, or fast-forward agent worktrees back to the main branch
 - **Batch templates** — Pre-built orchestration patterns: parallel work, plan-review loops, implement-review loops
 - **Two skills included** — `room-orchestrator` (for lead agents) and `room-member` (for subagents) with full workflow guidance
-- **Paseo compatibility* — Supports pi from [Paseo](https://github.com/getpaseo/paseo)
+- **Paseo compatibility** — Supports pi from [Paseo](https://github.com/getpaseo/paseo)
 
 https://github.com/user-attachments/assets/9402942a-4b91-4936-82ef-e122d18623be
 
