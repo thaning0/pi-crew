@@ -1,9 +1,3 @@
-
-
-
-
-
-
 # pi-crew
 
 Multi-agent crew orchestration extension for [pi](https://github.com/earendil-works/pi) — spawn subagents, assign tasks, and coordinate collaboration via a persistent room with git worktree isolation.
@@ -19,8 +13,7 @@ Multi-agent crew orchestration extension for [pi](https://github.com/earendil-wo
 - **Snapshot merging** — The lead agent can merge, rebase, or fast-forward agent worktrees back to the main branch
 - **Batch templates** — Pre-built orchestration patterns: parallel work, plan-review loops, implement-review loops
 - **Two skills included** — `room-orchestrator` (for lead agents) and `room-member` (for subagents) with full workflow guidance
-- **Session recovery** — File-system persistence enables recovery across agent restarts
-- **Mutation proxy** — Unix-socket based write serialization avoids file-lock contention between concurrent agents
+- **Paseo compatibility* — Supports pi from [Paseo](https://github.com/getpaseo/paseo)
 
 https://github.com/user-attachments/assets/9402942a-4b91-4936-82ef-e122d18623be
 
@@ -34,15 +27,8 @@ pi install git:https://github.com/thaning0/pi-crew.git
 
 This registers 4 extensions (`crew`, `builtin-tools`, `todo`, `wait`), 2 skills, and 8 agent prompt templates (plus support for custom agent types).
 
-## Quick Start
-
-Once installed, your pi agent gains access to `crew_*` tools and the `room-orchestrator` skill. Start by spawning a subagent:
-
-```
-crew_add { name: "explorer", type: "explorer", task: "Explore the src/ directory and summarize the module structure" }
-```
-
-The explorer agent will join the room, execute the task, report back, and auto-remove (transient mode).
+- Windows does not supported due to reliance on Unix file system semantics for state management. Linux and MacOS are supported.
+- Paseo compatibility requires paseo cli v0.1.79 or later. Older versions of this extension (1.x) are compatible with Paseo <= 0.1.78.
 
 ### Multi-agent workflow example
 
@@ -102,8 +88,6 @@ You are a database expert. Your role is to design schemas,
 write optimized queries, and review database changes.
 ```
 
-Then spawn it: `crew_add { name: "db", type: "db-expert" }`
-
 ## Crew Commands
 
 ### Room orchestration (lead only)
@@ -123,25 +107,6 @@ Then spawn it: `crew_add { name: "db", type: "db-expert" }`
 | `crew_reply` | Reply to a task to report completion or error: `{seq, summary, content?, kind?}` |
 | `crew_read` | Read full content of a message by sequence number |
 
-### Status (all members)
-
-| Tool | Description |
-|------|-------------|
-| `crew_who` | List all room members with current state |
-| `crew_tasks` | List tasks with status, filterable |
-| `crew_messages` | List recent board messages, filterable |
-| `crew_roles` | List available agent types |
-
-### Message kinds
-
-| Kind | Used for |
-|------|----------|
-| `task` | Assigning work to a member |
-| `info` | Sharing context without affecting task state |
-| `question` | Asking for clarification |
-| `completion` | Reporting successful task completion |
-| `error` | Reporting task failure |
-| `cancelled` | Cancelling a task |
 
 ## Skills
 
@@ -216,8 +181,7 @@ pi-crew extends pi with a room-based multi-agent system:
 - **File-system state** — All room state is persisted as JSON files, no external database
 - **File-based mutex** — Atomic writes via temp file + rename; mutation proxy serializes concurrent writes
 - **Git worktrees** — Workers operate in `/tmp/pi-agent-{name}-{nonce}/` with auto-commit on task completion
-- **Dual backend** — Supports both pi child processes and Paseo daemon agents
-- **Bootstrap block** — Room context is embedded in each subagent's system prompt for initialization
+- **Dual backend** — Supports both pi child processes and Paseo with pi as provider
 
 ## Paseo Compatibility
 - Version 2.0.0 of this extension requires Paseo >= 0.1.79
