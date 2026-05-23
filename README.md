@@ -22,20 +22,8 @@ Multi-agent crew orchestration extension for [pi](https://github.com/earendil-wo
 - **Session recovery** — File-system persistence enables recovery across agent restarts
 - **Mutation proxy** — Unix-socket based write serialization avoids file-lock contention between concurrent agents
 
-<table>
-  <tr>
-    <td style="padding: 8px;">
-      <video controls width="100%">
-        <source src="https://github.com/user-attachments/assets/9402942a-4b91-4936-82ef-e122d18623be" type="video/mp4">
-      </video>
-    </td>
-    <td style="padding: 8px;">
-      <video controls width="100%">
-        <source src="https://github.com/user-attachments/assets/1c6a8520-812c-4f67-ad9f-8d6e3c1be9f6" type="video/mp4">
-      </video>
-    </td>
-  </tr>
-</table>
+https://github.com/user-attachments/assets/9402942a-4b91-4936-82ef-e122d18623be
+https://github.com/user-attachments/assets/1c6a8520-812c-4f67-ad9f-8d6e3c1be9f6
 
 ## Install
 
