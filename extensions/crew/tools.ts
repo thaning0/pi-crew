@@ -1027,20 +1027,8 @@ export async function queueCrewAdd(
 				model: effectiveModel,
 				completed,
 			});
-			// Notify owner via board (skip for transient agents)
-			if (!transient) {
-				appendMessage(roomDir, {
-					from: "system",
-					to: "room",
-					...batchMessageOptions,
-					replyTo: null,
-					kind: "info",
-					summary: completed
-						? `Agent ${memberLabel} ready (${spawned.runtimeId})`
-						: `Agent ${memberLabel} spawned externally; awaiting bootstrap claim`,
-					broadcast: true,
-				}).catch(() => {});
-			}
+			// Spawn success: only log, no room notification.
+
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			log.error("spawn failed", { memberName: internalName, taskId, error: message });

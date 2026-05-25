@@ -1,192 +1,295 @@
 # pi-crew
 
-Multi-agent crew orchestration extension for [pi](https://github.com/earendil-works/pi) — spawn subagents, assign tasks, and coordinate collaboration via a persistent room with git worktree isolation.
+**Multi-agent collaboration, fully in sight.**
 
-## Features
+[中文文档](README_ZH.md)
 
-- **Multi-agent rooms** — Create persistent rooms where subagents collaborate via a shared message board
-- **8 built-in agent types** — explorer, worker, researcher, planner, advisor, code-quality-reviewer, plan-consistency-reviewer, plan-evaluator
-- **Custom agent types** — Define your own subagents via `.md` files in `.pi/crew_agents/` (repo-level) or `~/.pi/crew_agents/` (global)
-- **Task management** — Assign tasks, track completion/error/cancellation, with full status visibility
-- **Dependency chaining** — `{input:#N}` placeholders enable task-to-task workflows with automatic dependency resolution
-- **Git worktree isolation** — Each worker agent gets an isolated branch; snapshots are auto-committed on task completion
-- **Snapshot merging** — The lead agent can merge, rebase, or fast-forward agent worktrees back to the main branch
-- **Batch templates** — Pre-built orchestration patterns: parallel work, plan-review loops, implement-review loops
-- **Two skills included** — `room-orchestrator` (for lead agents) and `room-member` (for subagents) with full workflow guidance
-- **Paseo compatibility** — Supports pi from [Paseo](https://github.com/getpaseo/paseo)
+pi-crew is a multi-agent orchestration extension purpose-built for [Paseo](https://github.com/getpaseo/paseo) + [pi](https://github.com/earendil-works/pi). It's not another "let AIs talk to each other" framework — it's a coordination hub that lets you see, take over, and intervene in any subagent's workflow at any moment.
+
+---
+
+## Why pi-crew?
+
+### Every subagent works in plain sight
+
+Unlike other multi-agent solutions that hide subtasks in a black box, each pi-crew subagent runs as an **independent Paseo session**. You can switch to any subagent's workspace in the Paseo UI and watch its reasoning, tool calls, and file operations — **as if you're sitting right next to it**.
+
+### Human-in-the-loop, always
+
+Spot a problem? Take over directly. Subagent stuck? Jump in with a command. Heading the wrong way? Correct it on the spot. pi-crew doesn't assume AI can work perfectly on its own — it assumes you're the decision-maker, and AI is your high-bandwidth team of assistants.
+
+### Transparent collaboration
+
+Every coordination message — task assignments, completions, dependency triggers — lives on a shared message board. Not a log file, but a **living conversation record**. Rewind any interaction at any moment to understand why each agent did what it did.
+
+```mermaid
+graph TB
+    You[🧑 You]
+    Lead[🎯 Main Session<br/>Orchestrator]
+    Room[📋 Room<br/>Message Board + State]
+    Worker[👷 Worker]
+    Explorer[🔍 Explorer]
+    Researcher[📚 Researcher]
+    Reviewer[✅ Reviewer]
+
+    You -->|natural language| Lead
+    Lead -->|creates & manages| Room
+    Lead -->|delegates| Worker
+    Lead -->|delegates| Explorer
+    Lead -->|delegates| Researcher
+    Lead -->|delegates| Reviewer
+    Worker <-->|messages| Room
+    Explorer <-->|messages| Room
+    Researcher <-->|messages| Room
+    Reviewer <-->|messages| Room
+    You -.->|switch & intervene| Worker
+    You -.->|switch & intervene| Explorer
+```
+
+> 🧹 **Session-scoped lifecycle**: when the main session closes, all sub-agents and their git worktrees are automatically cleaned up. No leftovers.
+>
+> 💻 **Standalone mode**: pi-crew also works without Paseo — just pi alone. You lose the ability to directly view and interact with sub-agents, but all orchestration features work exactly the same.
+
+---
+
+## How pi-crew Compares
+
+| | pi-crew | Claude Code Teams | AutoGen | CrewAI |
+|---|---|---|---|---|
+| **Subagent visibility** | ✅ Live in Paseo UI | ❌ Terminal cycling | ❌ Code-level tracing | ❌ Logs only |
+| **Human-in-the-loop** | ✅ Intervene in any subagent | ⚠️ Lead-only interaction | ❌ Code intervention | ❌ Code intervention |
+| **Git isolation** | ✅ Per-worker worktree | ❌ Shared files, conflict risk | N/A | N/A |
+| **Task dependencies** | ✅ `{input:#N}` declarative | ⚠️ Shared task list | Configurable | Sequential/hierarchical |
+| **Crash recovery** | ✅ Heartbeat + watchdog | ❌ No session resume | ⚠️ Checkpoints | Limited |
+| **Custom agents** | ✅ One YAML file | ⚠️ Subagent definitions | Requires code | Requires code |
+| **Best for** | Coding, review, research | Exploratory tasks | Research experiments | Role-play pipelines |
+
+**pi-crew isn't just "another multi-agent framework"** — it's a control panel for managing AI assistants in Paseo the way you'd manage a team.
 
 https://github.com/user-attachments/assets/9402942a-4b91-4936-82ef-e122d18623be
 
 https://github.com/user-attachments/assets/1c6a8520-812c-4f67-ad9f-8d6e3c1be9f6
 
-## Install
+---
+
+## Quick Start
+
+### Install
 
 ```bash
 pi install git:https://github.com/thaning0/pi-crew.git
 ```
 
-This registers 4 extensions (`crew`, `builtin-tools`, `todo`, `wait`), 2 skills, and 8 agent prompt templates (plus support for custom agent types).
+Zero config, zero external services, zero database. Works on Linux and macOS.
 
-- Windows does not supported due to reliance on Unix file system semantics for state management. Linux and MacOS are supported.
-- Paseo compatibility requires paseo cli v0.1.79 or later. Older versions of this extension (1.x) are compatible with Paseo <= 0.1.78.
+### Your First Team
 
-### Multi-agent workflow example
+Just tell pi what you need — the orchestrator handles the rest:
 
-```
-# 1. Spawn a researcher to gather context
-crew_add { name: "researcher", type: "researcher" }
+> *"Investigate how JWT + OAuth should be implemented in this project, create a plan, and implement it."*
 
-# 2. Assign the research task
-crew_tell { to: "researcher", summary: "Research authentication patterns for Node.js", kind: "task", content: "Research best practices for JWT + OAuth in Node.js. Use web_search as needed. When done, @planner with findings." }
+pi-crew automatically spawns a researcher to gather context, a planner to design the approach, and a worker to write the code — each running as its own Paseo session you can watch and intervene in at any time.
 
-# 3. Spawn a planner
-crew_add { name: "planner", type: "planner" }
+### Code Review on Autopilot
 
-# 4. Spawn a worker for implementation
-crew_add { name: "worker", type: "worker" }
+> *"Review src/auth for security issues and code quality, have the fixes applied, then review again."*
 
-# 5. Check status
-crew_who {}
-crew_tasks {}
-```
+pi-crew runs the full implement-review loop: write → review → revise → review, up to 3 rounds, until reviewers approve.
 
-## Agent Types
+### Parallel Feature Development
 
-| Agent | Role | Thinking | Worktree |
-|-------|------|----------|----------|
-| `explorer` | Fast read-only code/web exploration | Low | No |
-| `worker` | General-purpose with isolated worktree | High | **Yes** |
-| `researcher` | Multi-source investigation (code + web) | High | No |
-| `planner` | Creates structured implementation plans | High | No |
-| `advisor` | Expert guidance and debugging analysis | — | No |
-| `code-quality-reviewer` | Code review and quality evaluation | — | No |
-| `plan-consistency-reviewer` | Plan consistency verification | — | No |
-| `plan-evaluator` | Plan evaluation against success criteria | — | No |
+> *"Build the login page UI, the login API endpoint, and integration tests — all three in parallel."*
 
-Agent types are defined as Markdown files with YAML frontmatter. You can add custom agent types by creating `.md` files in these directories (searched in priority order):
+Three workers start simultaneously, each in its own isolated git worktree. No conflicts. Results aggregated when all finish.
 
-1. **Repo-level** — `.pi/crew_agents/` (relative to your repo root, **highest priority**)
-2. **Global** — `~/.pi/crew_agents/` (available across all projects)
-3. **Built-in** — `prompts/agents/` (shipped with pi-crew, lowest priority)
+### Dependency Chains
 
-When the same agent type exists in multiple directories, the higher-priority one wins — making it easy to override a built-in agent without modifying the extension.
+> *"Research the authentication landscape first, then design the architecture based on that research, then implement it."*
 
-### Custom agent file format
+pi-crew chains tasks automatically — each downstream task waits for its upstream to complete before starting. No manual handoff required.
 
-Create a `.md` file with YAML frontmatter. Example `~/.pi/crew_agents/db-expert.md`:
+---
+
+## Built-in Agents
+
+| Agent | Best at | Worktree Isolated |
+|-------|--------|:---:|
+| `explorer` | Fast codebase & web exploration | |
+| `worker` | General coding, isolated git branch | ✅ |
+| `researcher` | Multi-source investigation (code + web) | |
+| `planner` | Structured implementation plans | |
+| `advisor` | Deep technical analysis & debugging | |
+| `code-quality-reviewer` | Code review & quality evaluation | |
+| `plan-consistency-reviewer` | Plan-vs-implementation consistency | |
+| `plan-evaluator` | Plan feasibility assessment | |
+
+### Custom Agents
+
+One `.md` file, one YAML block, and you have a custom agent:
 
 ```markdown
 ---
 name: db-expert
-description: Expert in database schema design and SQL optimization
-tools: read, grep, find, ls, todo, wait
+description: Database schema design & SQL optimization expert
+tools: read, grep, find, ls, todo, wait, bash, web_search
 thinking: high
 worktree: false
 ---
 
-You are a database expert. Your role is to design schemas,
-write optimized queries, and review database changes.
+You are a database expert. Design schemas, optimize queries, review DB changes.
+Run independently in Paseo, collaborate via the message board.
 ```
 
-## Crew Commands
+Place in `.pi/crew_agents/` (project-level) or `~/.pi/crew_agents/` (global). Automatically discovered.
 
-### Room orchestration (lead only)
+> 🎯 **Design**: project > global > built-in. Override any built-in agent without touching the extension.
 
-| Tool | Description |
-|------|-------------|
-| `crew_add` | Spawn a subagent: `{name, type, model?, task?, transient?}` |
-| `crew_remove` | Permanently remove a member |
-| `crew_merge` | Merge an agent's worktree snapshot: `{name, strategy?, deleteBranchAfterMerge?, commitMessage?}` |
-| `crew_batch` | Run a batch orchestration template: `{template, params}` |
+---
+
+## Bundled Plugins
+
+pi-crew ships with two small plugins that help sub-agents coordinate more effectively:
+
+### `todo` — Task Progress Tracking
+
+Sub-agents use `todo { action: "add", text: "..." }` to break their work into checkpoints and `todo { action: "toggle", id: N }` to mark them done. Progress updates appear in the room board, keeping the orchestrator and other agents aware of how far along each task is.
+
+### `wait` — Async Polling
+
+Sub-agents call `wait { reason: "..." }` to pause and listen for incoming messages (e.g. waiting for a dependency to complete, or waiting for background task output). This prevents spin-loop polling and keeps token usage low during idle periods.
+
+Both plugins are registered automatically on install — no configuration needed.
+
+---
+
+## Collaboration Patterns
+
+### Pattern 1: Serial Pipeline
+
+```bash
+crew_add → crew_tell(task) → wait for completion → crew_tell(task) → ...
+```
+
+For linear, step-by-step workflows.
+
+### Pattern 2: Parallel Work
+
+```bash
+crew_batch {
+  template: "parallel-work-aggregate",
+  params: {
+    workers: [
+      { name: "fe", type: "worker", task: "Implement the login page" },
+      { name: "be", type: "worker", task: "Implement POST /api/login" },
+      { name: "test", type: "worker", task: "Write integration tests for login" }
+    ]
+  }
+}
+```
+
+Three workers start simultaneously, each in its own git worktree. Results aggregated when all finish.
+
+### Pattern 3: Review Loop
+
+```bash
+crew_batch {
+  template: "implement-review-loop",
+  params: { author: ..., reviewers: [...], initialAuthorTask: ..., maxRounds: 3 }
+}
+```
+
+Code → Review → Feedback → Revise → Review, until approved or max rounds.
+
+### Pattern 4: Auto-Handoff Chain
+
+```bash
+crew_tell { to: "scout", kind: "task", content: "Investigate the auth module. @planner when done." }
+crew_tell { to: "planner", kind: "task", content: "Depends on scout {input:#55}. Design then @worker." }
+crew_tell { to: "worker", kind: "task", content: "Depends on planner {input:#56}. Implement and reply." }
+```
+
+Assign all tasks upfront. The system triggers each agent automatically when dependencies resolve. You just watch the progress in Paseo and jump in whenever needed.
+
+---
+
+## Git Worktree Isolation
+
+Worker agents operate in isolated git worktrees, completely independent of each other:
+
+```
+Your repo (main workspace)
+├── /tmp/pi-agent-worker-a1b2c3/   ← Worker A's isolated branch
+├── /tmp/pi-agent-worker-d4e5f6/   ← Worker B's isolated branch
+└── /tmp/pi-agent-worker-g7h8i9/   ← Worker C's isolated branch
+```
+
+Each worker auto-commits (`git add -A && git commit`) on task completion, creating a snapshot. Merge any worker's work back with:
+
+```bash
+crew_merge { name: "worker", strategy: "merge" }
+crew_merge { name: "worker", strategy: "rebase" }
+crew_merge { name: "worker", strategy: "ff-only" }
+```
+
+---
+
+## Command Reference
+
+### Control (lead only)
+
+| Command | Description |
+|---------|-------------|
+| `crew_add {name, type, model?, task?, transient?}` | Spawn a subagent |
+| `crew_remove {name}` | Permanently remove a subagent |
+| `crew_merge {name, strategy?, deleteBranchAfterMerge?}` | Merge worktree snapshot |
+| `crew_batch {template, params}` | Run a batch orchestration template |
 
 ### Communication (all members)
 
-| Tool | Description |
-|------|-------------|
-| `crew_tell` | Send a message to a member, room broadcast, or reply: `{to?, summary, content?, broadcast?, replyTo?, kind?}` |
-| `crew_reply` | Reply to a task to report completion or error: `{seq, summary, content?, kind?}` |
-| `crew_read` | Read full content of a message by sequence number |
+| Command | Description |
+|---------|-------------|
+| `crew_tell {to?, summary, content?, kind?}` | Send a message (task/question/info) |
+| `crew_reply {seq, summary, content?, kind}` | Reply to a task (completion/error) |
+| `crew_read {seq, offset?, limit?}` | Read message details |
 
+### Inspection
 
-## Skills
+| Command | Description |
+|---------|-------------|
+| `crew_who {}` | List all members and their states |
+| `crew_tasks {}` | List all tasks and their statuses |
+| `crew_messages {limit?, filter?}` | Browse the message board |
 
-Two skills are included to guide LLM behavior:
+---
 
-### `room-orchestrator`
+## The Paseo Experience
 
-Loaded automatically for the lead agent. Covers:
-- Spawning and managing subagents
-- Task assignment patterns (serial, auto-handoff chains, transient agents)
-- Batch template usage (`parallel-work-aggregate`, `plan-review-loop`, `implement-review-loop`)
-- Git worktree merging strategies
-- Dependency chain setup with `{input:#N}`
+When you use pi-crew through Paseo:
 
-### `room-member`
+1. **Each subagent is its own session** — visible in the Paseo sidebar, click to switch
+2. **Live reasoning** — watch every step of reasoning and every tool invocation
+3. **Intervene anytime** — subagent stuck? Jump in with instructions. Wrong direction? Correct it. Bad code? Stop and restart
+4. **Message board at a glance** — all task states, dependency triggers, and completions visible
+5. **Snapshot merging** — review a worker's code, then merge to main with one command
 
-Loaded automatically for subagents. Covers:
-- Reading and responding to tasks
-- Using crew communication tools
-- Replying with completion/error status
-- Collaborating via `crew_tell`
+This isn't "AI doing your work for you" — it's **you directing a team of AI assistants**.
 
-## Configuration
+---
 
-All configuration is via environment variables:
+## Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `PI_ROOM_POLL_INTERVAL_MS` | Poll cycle interval for new messages | 2000 |
-| `PI_ROOM_DELIVERY_DEBOUNCE_MS` | Debounce for message delivery | 1000 |
-| `PI_ROOM_OWNER_HEARTBEAT_INTERVAL_MS` | Owner heartbeat write interval | 1000 |
-| `PI_ROOM_OWNER_HEARTBEAT_STALE_MS` | Owner heartbeat stale timeout | 5000 |
-| `PI_ROOM_MEMBER_HEARTBEAT_INTERVAL_MS` | Member heartbeat write interval | 1000 |
-| `PI_ROOM_MEMBER_HEARTBEAT_STALE_MS` | Member heartbeat stale timeout | 5000 |
-| `PI_ROOM_ROOM_SPAWN_JOIN_TIMEOUT_MS` | Spawn join timeout | 120000 |
-| `PI_ROOM_LOG_LEVEL` | Log level (`silent`, `default`, `debug`) | `error` |
-| `PI_ROOM_PASEO_CLI_PATH` | Override paseo CLI path | auto-detect |
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `PI_ROOM_POLL_INTERVAL_MS` | Message poll interval | 2000 |
+| `PI_ROOM_DELIVERY_DEBOUNCE_MS` | Message delivery debounce | 1000 |
+| `PI_ROOM_LOG_LEVEL` | Log verbosity | `error` |
 
-## Architecture
+See docs for the full list (rarely needs adjustment — defaults cover the vast majority of use cases).
 
-pi-crew extends pi with a room-based multi-agent system:
-
-```
-┌──────────────────────────────────────────────────────┐
-│  Owner (lead agent)                                   │
-│  ┌────────────┐  ┌──────────────┐  ┌──────────────┐ │
-│  │ crew_add   │  │ mutation     │  │ heartbeat    │ │
-│  │ crew_merge │  │ proxy server │  │ writer       │ │
-│  └────────────┘  └──────┬───────┘  └──────────────┘ │
-│                         │ Unix socket                 │
-├─────────────────────────┼────────────────────────────┤
-│  ~/.pi/agent/runtime/   │                             │
-│  rooms/{roomId}/        │                             │
-│  ├── room.json          │                             │
-│  ├── agent.log          │                             │
-│  ├── members/*.json     │                             │
-│  ├── messages/*.json    │                             │
-│  ├── heartbeats/*.json  │                             │
-│  └── locks/mutation.lock│                             │
-├─────────────────────────┼────────────────────────────┤
-│                         │                             │
-│  Member (worker agent)  │   Member (explorer agent)   │
-│  ┌──────────────┐       │   ┌──────────────┐          │
-│  │ polling loop │◄──────┼───│ polling loop │          │
-│  │ crew_reply   │       │   │ crew_tell    │          │
-│  │ worktree     │       │   │ (read-only)  │          │
-│  └──────────────┘       │   └──────────────┘          │
-└──────────────────────────────────────────────────────┘
-```
-
-**Key design decisions:**
-- **File-system state** — All room state is persisted as JSON files, no external database
-- **File-based mutex** — Atomic writes via temp file + rename; mutation proxy serializes concurrent writes
-- **Git worktrees** — Workers operate in `/tmp/pi-agent-{name}-{nonce}/` with auto-commit on task completion
-- **Dual backend** — Supports both pi child processes and Paseo with pi as provider
-
-## Paseo Compatibility
-- Version 2.0.0 of this extension requires Paseo >= 0.1.79
-- Older versions (1.x) are compatible with Paseo <= 0.1.78
+---
 
 ## License
 
 MIT
+
+---
