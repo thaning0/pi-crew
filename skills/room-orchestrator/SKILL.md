@@ -60,9 +60,11 @@ crew_batch {
 }
 ```
 
+**Agent reuse:** `crew_batch` reuses existing `idle` members when the name matches. This allows pre-building an agent pool via `crew_add`, then running multiple `crew_batch` calls against the same agents — avoiding repeated initialization overhead. After batch completion, agents remain `idle`.
+
 **When NOT to use batch templates:**
-- Single simple task with one agent → Pattern 1
-- Complex dependency chains with conditional handoffs → Pattern 2
+- Single simple task with one agent → Pattern 1 or 2
+- Complex dependency chains with conditional handoffs → Pattern 3
 
 ### Pattern 1: Transient Agents for One-Off Tasks
 For quick, one-off tasks that don't require ongoing context, spawn a transient agent, assign the task using `crew_add`. The agent will be auto removed after completing the task and replying. This is ideal for simple, independent tasks that don't warrant a permanent agent.

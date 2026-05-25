@@ -2345,6 +2345,8 @@ export interface CrewWhoEntry {
 	lastSnapshotSummary?: string | null;
 	lastMergedOid?: string | null;
 	mergeReady: boolean;
+	/** Absolute path to the agent's git worktree, if any. */
+	worktreePath?: string | null;
 }
 
 export async function collectCrewWhoEntries(
@@ -2381,6 +2383,7 @@ export async function collectCrewWhoEntries(
 			...(member.lastSnapshotSummary !== undefined ? { lastSnapshotSummary: member.lastSnapshotSummary ?? null } : {}),
 			...(member.lastMergedOid !== undefined ? { lastMergedOid: member.lastMergedOid ?? null } : {}),
 			mergeReady,
+			...(isOwner ? {} : { worktreePath: member.worktree?.path ?? null }),
 		});
 	}
 
@@ -2416,6 +2419,9 @@ function formatCrewWhoEntries(entries: CrewWhoEntry[]): string {
 			if (entry.lastMergedOid) {
 				const short = entry.lastMergedOid.slice(0, 9);
 				lines.push(`   merged: ${short}${entry.lastSnapshotSummary ? ` — ${entry.lastSnapshotSummary}` : ""}`);
+			}
+			if (entry.worktreePath) {
+				lines.push(`   root: ${entry.worktreePath}`);
 			}
 		}
 	}

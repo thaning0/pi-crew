@@ -332,6 +332,31 @@ export async function assertDisplayAliasAvailable(roomDir: string, displayName: 
 	}
 }
 
+/**
+ * Find an idle, non-transient member by their display alias and type.
+ * Returns the member if found and idle with matching type, or null otherwise.
+ *
+ * Excludes:
+ *  - Non-idle members (spawning, running, error, stopping, removed, chatting)
+ *  - Transient members (auto-remove on completion; unsafe to reuse)
+ *  - Type mismatches (prevents mixing agent roles, e.g. planner vs worker)
+ */
+export async function findIdleMemberByAlias(
+	roomDir: string,
+	displayName: string,
+	memberType: string,
+): Promise<RoomMemberState | null> {
+	const normalized = normalizeMemberDisplayName(displayName);
+	const members = await listRoomMembers(roomDir);
+	const match = members.find((member) => {
+		if (member.state !== "idle") return false;
+		if (member.transient === true) return false;
+		if (member.type !== memberType) return false;
+		return getMemberDisplayName(member) === normalized;
+	});
+	return match ?? null;
+}
+
 export async function resolveMemberTarget(roomDir: string, input: string): Promise<RoomMemberState> {
 	const trimmedInput = input.trim();
 	const direct = await loadRoomMemberState(roomDir, trimmedInput).catch(() => null);
@@ -1112,14 +1137,18 @@ export async function claimMemberSession(options: {
 				runtimeId: effectiveRuntimeId,
 				memberPid: options.memberPid,
 			}),
-			bootstrapClaimedAt: now,
+			bootstrapClaimedAt: baseline.bootstrapClaimedAt ?? now,
 			state: baseline.state,
 			spawnTaskId: baseline.spawnTaskId ?? options.bootstrap.spawnTaskId ?? null,
 			updatedAt: now,
 			heartbeatAt: now,
 			lastActiveAt: baseline.lastActiveAt ?? now,
 			joinedAt: baseline.joinedAt || now,
-			sessionId: options.sessionId,
+			// Preserve the existing sessionId when another session attempts
+			// to re-claim an already-active member.
+			sessionId: baseline.sessionId != null && baseline.sessionId !== options.sessionId
+			? baseline.sessionId
+			: options.sessionId,
 			chatBusy: false,
 			bootstrapToken: expectedBootstrapToken ?? baseline.bootstrapToken ?? options.bootstrap.token,
 		};

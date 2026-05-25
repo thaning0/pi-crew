@@ -665,6 +665,18 @@ export async function activateBootstrapRoom(
 					backend: "pi",
 				});
 
+	// If another session already owns this member (claimMemberSession
+	// preserved the existing sessionId), do not activate.  The member
+	// is already being served by a different Pi process.
+	if (joined.sessionId !== sessionId) {
+		log.info("member already claimed by another session, not activating", {
+			memberName: bootstrap.memberName,
+			incomingSessionId: sessionId,
+			storedSessionId: joined.sessionId,
+		});
+		return;
+	}
+
 	// Notify owner that this member has joined (skip for transient agents)
 	try {
 		const joinBatchId = joined.spawnBatchId ?? undefined;

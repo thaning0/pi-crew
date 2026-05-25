@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { getActiveRoom, resolveAccessibleRoom, trackActiveRoomTask } from "./lifecycle.ts";
-import { appendMessage, listBoardEntries, loadRoomMemberState } from "./storage.ts";
+import { appendMessage, findIdleMemberByAlias, formatMemberLabel, listBoardEntries, loadRoomMemberState } from "./storage.ts";
 import { ValidationError } from "./errors.ts";
 import { createRoomLogger } from "./logger.ts";
 import {
@@ -495,8 +495,9 @@ function buildReviewerTaskContent(
 	template: CrewBatchTemplateName,
 	round: number,
 	authorReply: TaskTerminalWaitResult,
+	authorWorktreePath?: string | null,
 ): string {
-	return [
+	const base = [
 		`Review round ${round} for ${template}.`,
 		"Return an explicit verdict envelope with crew_reply(kind=\"completion\", ...).",
 		"- Pass: crew_reply(kind=\"completion\", summary=\"VERDICT: PASS — <short reason>\", content=\"<full review notes>\")",
@@ -505,7 +506,20 @@ function buildReviewerTaskContent(
 		"A missing or malformed verdict is a protocol failure.",
 		"",
 		`Author output: ${formatReplySummary(authorReply.reply)}`,
-	].join("\n");
+	];
+
+	if (authorWorktreePath) {
+		base.push(
+			"",
+			`Author worktree: ${authorWorktreePath}`,
+			"You can inspect the author's changes with:",
+			`  ls ${authorWorktreePath}`,
+			`  read ${authorWorktreePath}/path/to/changed/file.cs`,
+			`  grep "pattern" ${authorWorktreePath}`,
+		);
+	}
+
+	return base.join("\n");
 }
 
 function buildRevisionTaskContent(
@@ -590,6 +604,60 @@ async function executeParallelWorkAggregate(
 
 	for (const worker of parsed.workers) {
 		try {
+			// ── Try reuse first ──────────────────────────────
+			const existingIdle = await findIdleMemberByAlias(activeRoom.roomDir, worker.name, worker.type);
+			if (existingIdle && worker.task) {
+				// Reuse: assign task to existing idle member via crew_tell
+				const tellResult = await queueCrewTell(
+					{
+						to: existingIdle.name,
+						kind: "task",
+						summary: worker.task,
+						content: worker.task,
+					},
+					{ activeRoom, batchContext },
+				);
+				results.push({
+					worker,
+					queued: {
+						memberName: existingIdle.name,
+						memberLabel: formatMemberLabel(existingIdle),
+						backend: existingIdle.backend,
+						taskId: existingIdle.spawnTaskId ?? "",
+						transient: false,
+						initialTask: {
+							messageId: tellResult.message.id,
+							seq: tellResult.message.seq,
+							targetName: existingIdle.name,
+							batchId: batchContext?.id ?? null,
+						},
+						initialTaskBoardError:
+							tellResult.unresolvedMentions.length > 0
+								? `skipped unresolved mentions: ${tellResult.unresolvedMentions.join(", ")}`
+								: undefined,
+						unresolvedMentions: tellResult.unresolvedMentions,
+					},
+				});
+				continue;
+			}
+			if (existingIdle) {
+				// Reuse without task assignment (member presence only)
+				results.push({
+					worker,
+					queued: {
+						memberName: existingIdle.name,
+						memberLabel: formatMemberLabel(existingIdle),
+						backend: existingIdle.backend,
+						taskId: existingIdle.spawnTaskId ?? "",
+						transient: false,
+						initialTask: undefined,
+						unresolvedMentions: [],
+					},
+				});
+				continue;
+			}
+
+			// ── Fallback: spawn new agent ───────────────────
 			const queued = await queueCrewAdd(worker, {
 				activeRoom,
 				sessionId: activeRoom.sessionId,
@@ -661,6 +729,31 @@ async function executeReviewLoop(
 		...parsed.reviewers.map((reviewer) => ({ role: "reviewer" as const, participant: reviewer })),
 	]) {
 		try {
+			// ── Try reuse first ──────────────────────────────
+			const existingIdle = await findIdleMemberByAlias(
+				activeRoom.roomDir,
+				participant.participant.name,
+				participant.participant.type,
+			);
+			if (existingIdle) {
+				// Reuse: no task assigned yet (tasks are assigned via queueCrewTell in the round loop)
+				participants.push({
+					role: participant.role,
+					participant: participant.participant,
+					queued: {
+						memberName: existingIdle.name,
+						memberLabel: formatMemberLabel(existingIdle),
+						backend: existingIdle.backend,
+						taskId: existingIdle.spawnTaskId ?? "",
+						transient: false,
+						initialTask: undefined,
+						unresolvedMentions: [],
+					},
+				});
+				continue;
+			}
+
+			// ── Fallback: spawn new agent ───────────────────
 			const queued = await queueCrewAdd(participant.participant, {
 				activeRoom,
 				sessionId: activeRoom.sessionId,
@@ -769,13 +862,22 @@ async function executeReviewLoop(
 			});
 		}
 
+		// Look up author worktree path for reviewer access
+		let authorWorktreePath: string | null = null;
+		try {
+			const authorMember = await loadRoomMemberState(activeRoom.roomDir, author.queued.memberName);
+			authorWorktreePath = authorMember.worktree?.path ?? null;
+		} catch {
+			// loadRoomMemberState may throw if member state file is missing; treat as no worktree
+		}
+
 		for (const reviewer of reviewers) {
 			const reviewerQueuedTask = await queueCrewTell(
 				{
 					to: reviewer.queued.memberName,
 					kind: "task",
 					summary: `${config.reviewerSummaryLabel} round ${round}`,
-					content: buildReviewerTaskContent(config.template, round, authorReply),
+					content: buildReviewerTaskContent(config.template, round, authorReply, authorWorktreePath),
 				},
 				{ activeRoom, batchContext },
 			);
