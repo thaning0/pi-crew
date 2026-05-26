@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "types": ["node", "vitest"],
+    "skipLibCheck": true,
+    "strict": false,
+    "noEmit": true
+  },
+  "files": [
+    "ambient-modules.d.ts",
+    "index.ts",
+    "integration-events.ts",
+    "integration-events.test.ts"
+  ]
+}
