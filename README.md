@@ -66,9 +66,11 @@ graph TB
 
 **pi-crew isn't just "another multi-agent framework"** — it's a control panel for managing AI assistants in Paseo the way you'd manage a team.
 
-https://github.com/user-attachments/assets/9402942a-4b91-4936-82ef-e122d18623be
+**[Demo: Human-in-the-loop intervention](https://github.com/user-attachments/assets/9402942a-4b91-4936-82ef-e122d18623be)**  
+Watch how you can switch into any subagent's workspace and take control mid-task.
 
-https://github.com/user-attachments/assets/1c6a8520-812c-4f67-ad9f-8d6e3c1be9f6
+**[Demo: Full review-fix loop in action](https://github.com/user-attachments/assets/1c6a8520-812c-4f67-ad9f-8d6e3c1be9f6)**  
+See the complete cycle: reviewer finds issues → fixer addresses them → re-review until approved.
 
 ---
 
@@ -243,8 +245,8 @@ Reviewer examines existing artifact (design doc, code diff, implementation resul
 ### Pattern 5: Auto-Handoff Chain
 
 ```bash
-crew_tell { to: "scout", kind: "task", content: "Investigate the auth module. @planner when done." }
-crew_tell { to: "planner", kind: "task", content: "Depends on scout {input:#55}. Design then @worker." }
+crew_tell { to: "explorer", kind: "task", content: "Investigate the auth module. @planner when done." }
+crew_tell { to: "planner", kind: "task", content: "Depends on explorer {input:#55}. Design then @worker." }
 crew_tell { to: "worker", kind: "task", content: "Depends on planner {input:#56}. Implement and reply." }
 ```
 
