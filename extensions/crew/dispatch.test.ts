@@ -5,8 +5,13 @@ import {
 	applyIncomingMessageState,
 	applyOutgoingMessageState,
 	formatRoomMessageContent,
+	shouldQueueCallerDirectedMessage,
 } from "./dispatch.ts";
-import type { RoomMemberState, RoomMessage } from "./types.ts";
+import type {
+	CrewAddReplayDeliveryGate,
+	RoomMemberState,
+	RoomMessage,
+} from "./types.ts";
 
 function makeMessage(overrides: Partial<RoomMessage> = {}): RoomMessage {
 	return {
@@ -41,6 +46,21 @@ function makeMember(overrides: Partial<RoomMemberState> = {}): RoomMemberState {
 		joinedAt: new Date().toISOString(),
 		updatedAt: new Date().toISOString(),
 		sessionId: "session-1",
+		...overrides,
+	};
+}
+
+function makeDeliveryGate(
+	overrides: Partial<CrewAddReplayDeliveryGate> = {},
+): CrewAddReplayDeliveryGate {
+	return {
+		activation: "manual",
+		state: "held",
+		hold_expires_at: "2026-05-26T00:01:00.000Z",
+		opened_at: null,
+		released_at: null,
+		aborted_at: null,
+		ended_at: null,
 		...overrides,
 	};
 }
@@ -124,6 +144,40 @@ describe("shouldDeliverMessage", () => {
 	])("delivers targeted dependency control message '%s' before the system-message filter", (summary) => {
 		const msg = makeMessage({ to: "worker-1", from: "system", kind: "info", broadcast: false, summary });
 		expect(shouldDeliverMessage(msg, "worker-1")).toBe(true);
+	});
+
+	it.each(["task", "info", "question"] as const)(
+		"does NOT deliver held caller-directed %s traffic while delivery is gated",
+		(kind) => {
+			const gate = makeDeliveryGate({ state: "held" });
+			const msg = makeMessage({ kind, to: "worker-1", from: "owner", broadcast: false });
+			expect(shouldQueueCallerDirectedMessage(msg, "worker-1", gate)).toBe(true);
+			expect(shouldDeliverMessage(msg, "worker-1", gate)).toBe(false);
+		},
+	);
+
+	it("does not queue targeted system cleanup traffic while delivery is held", () => {
+		const gate = makeDeliveryGate({ state: "held" });
+		const msg = makeMessage({
+			to: "worker-1",
+			from: "system",
+			kind: "info",
+			broadcast: false,
+			summary: "Dependency cancelled — some upstream tasks for #42 were cancelled",
+		});
+		expect(shouldQueueCallerDirectedMessage(msg, "worker-1", gate)).toBe(false);
+		expect(shouldDeliverMessage(msg, "worker-1", gate)).toBe(true);
+	});
+
+	it("stops queueing once the delivery gate is enabled", () => {
+		const gate = makeDeliveryGate({
+			activation: "immediate",
+			state: "enabled",
+			opened_at: "2026-05-26T00:00:30.000Z",
+		});
+		const msg = makeMessage({ kind: "task", to: "worker-1", from: "owner", broadcast: false });
+		expect(shouldQueueCallerDirectedMessage(msg, "worker-1", gate)).toBe(false);
+		expect(shouldDeliverMessage(msg, "worker-1", gate)).toBe(true);
 	});
 });
 

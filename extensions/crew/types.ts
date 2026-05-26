@@ -84,6 +84,8 @@ export interface RoomMemberState {
 	lastSnapshotTaskSeq?: number | null;
 	lastMergedOid?: string | null;
 	pendingTerminalReply?: PendingTerminalReplyState | null;
+	queuedDeliveryMessageIds?: string[] | null;
+	queuedTaskMessageIds?: string[] | null;
 	/** Cleanup result from a completed worktree session. */
 	worktreeResult?: { hasChanges: boolean; branch?: string; snapshotOid?: string | null } | null;
 }
@@ -254,6 +256,16 @@ export interface CrewAddReplayableEvent {
 	reason: string | null;
 }
 
+export interface CrewAddReplayDeliveryGate {
+	activation: CrewAddActivation;
+	state: CrewReplayDeliveryState;
+	hold_expires_at: string | null;
+	opened_at: string | null;
+	released_at: string | null;
+	aborted_at: string | null;
+	ended_at: string | null;
+}
+
 export interface CrewAddReplayLifecycleSnapshot {
 	event_id: string | null;
 	event: CrewReplayLifecycleEventName | null;
@@ -270,6 +282,7 @@ export interface CrewAddReplayLifecycleSnapshot {
 	metadata: Record<string, unknown> | null;
 	delivery_state: CrewReplayDeliveryState | null;
 	hold_expires_at: string | null;
+	delivery?: CrewAddReplayDeliveryGate | null;
 	error: string | null;
 	reason: string | null;
 	member_state: RoomMemberLifecycleState | null;

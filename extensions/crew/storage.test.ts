@@ -22,6 +22,7 @@ import {
 	listBoardEntries,
 	loadRoomMetadata,
 	loadRoomMemberState,
+	markMemberJoined,
 	readMemberHeartbeat,
 	readSpawnJob,
 	transitionSpawnJob,
@@ -37,6 +38,7 @@ import { MutationProxyServer } from "./mutation-proxy.ts";
 import { MutationClient } from "./mutation-client.ts";
 import { reconcileSpawnTimeouts } from "./watchdog.ts";
 import { queueCrewAdd } from "./tools.ts";
+import { buildCrewLifecycleEvent } from "./integration-events.ts";
 
 async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "room-storage-test-"));
@@ -1264,17 +1266,217 @@ describe("Member identity helpers", () => {
 						metadata: { source: "proxy" },
 					});
 					expect(persisted?.replay).toMatchObject({
-						event: "held",
+						event: "claimed",
 						phase: "delivery",
 						member_state: "idle",
 						job_state: "completed",
 						runtime_id: "agent-proxy-1",
 						spawn_task_id: "spawn-request-proxy-1",
+						delivery_state: "held",
+						delivery: {
+							activation: "manual",
+							state: "held",
+						},
 					});
 				} finally {
 					client.disconnect();
 					await proxy.stop();
 				}
+			});
+		});
+
+		it("persists explicit delivery-gate state when immediate delivery first opens", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-request-replay-immediate-open",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				const readCrewAddRequestReplay = (storage as {
+					readCrewAddRequestReplay?: (roomDir: string, requestId: string) => Promise<any>;
+				}).readCrewAddRequestReplay;
+
+				await createSpawningMember(created.roomDir, {
+					name: "immediate-worker",
+					displayName: "immediate-worker",
+					type: "worker",
+					backend: "pi",
+					taskId: "spawn-request-immediate-open",
+					bootstrapToken: "bootstrap-immediate-open",
+					requestReplay: {
+						requestId: "req-immediate-open",
+						requestedName: "immediate-worker",
+						type: "worker",
+						model: null,
+						task: null,
+						transient: false,
+						metadata: { source: "immediate-open" },
+						activation: "immediate",
+						holdTimeoutMs: null,
+					},
+				} as never);
+
+				await markMemberJoined({
+					bootstrap: {
+						version: 1,
+						roomId: created.metadata.roomId,
+						roomDir: created.roomDir,
+						memberName: "immediate-worker",
+						memberType: "worker",
+						ownerName: "owner",
+						ownerSessionId: created.metadata.ownerSessionId,
+						token: "bootstrap-immediate-open",
+						spawnTaskId: "spawn-request-immediate-open",
+					},
+					sessionId: "immediate-open-session",
+					runtimeId: "runtime-immediate-open",
+					backend: "pi",
+				});
+
+				const persisted = await readCrewAddRequestReplay?.(
+					created.roomDir,
+					"req-immediate-open",
+				);
+				expect(persisted?.replay).toMatchObject({
+					event: "enabled",
+					phase: "delivery",
+					delivery_state: "enabled",
+				});
+				expect(persisted?.replay?.delivery).toMatchObject({
+					activation: "immediate",
+					state: "enabled",
+					hold_expires_at: null,
+					released_at: null,
+					aborted_at: null,
+					ended_at: null,
+				});
+				expect(persisted?.replay?.delivery?.opened_at).toEqual(
+					persisted?.replay?.updated_at,
+				);
+			});
+		});
+
+		it("keeps held task assignment queued on the board without mutating member task state", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-held-assignment",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				const readCrewAddRequestReplay = (storage as {
+					readCrewAddRequestReplay?: (roomDir: string, requestId: string) => Promise<any>;
+				}).readCrewAddRequestReplay;
+
+				const spawned = await createSpawningMember(created.roomDir, {
+					name: "held-worker",
+					displayName: "held-worker",
+					type: "worker",
+					backend: "pi",
+					taskId: "spawn-request-held-assignment",
+					bootstrapToken: "bootstrap-held-assignment",
+					requestReplay: {
+						requestId: "req-held-assignment",
+						requestedName: "held-worker",
+						type: "worker",
+						model: null,
+						task: null,
+						transient: false,
+						metadata: { source: "held-assignment" },
+						activation: "manual",
+						holdTimeoutMs: 30_000,
+					},
+				} as never);
+
+				await storage.persistCrewAddReplayEvent?.({
+					roomDir: created.roomDir,
+					requestId: "req-held-assignment",
+					event: buildCrewLifecycleEvent({
+						event: "spawned",
+						phase: "spawn",
+						request_id: "req-held-assignment",
+						command_id: null,
+						requested_name: "held-worker",
+						member_target: "held-worker",
+						member_type: "worker",
+						room_id: created.metadata.roomId,
+						spawn_task_id: "spawn-request-held-assignment",
+						runtime_id: null,
+						activation: "manual",
+						metadata: { source: "held-assignment" },
+						delivery_state: "held",
+						hold_expires_at: "2026-05-26T00:01:00.000Z",
+						error: null,
+						reason: null,
+					}),
+					member: spawned.member,
+					job: spawned.job,
+				});
+				await expect(
+					readCrewAddRequestReplay?.(created.roomDir, "req-held-assignment"),
+				).resolves.toMatchObject({
+					replay: {
+						event: "spawned",
+						delivery_state: "held",
+						delivery: { state: "held" },
+					},
+				});
+
+				await markMemberJoined({
+					bootstrap: {
+						version: 1,
+						roomId: created.metadata.roomId,
+						roomDir: created.roomDir,
+						memberName: "held-worker",
+						memberType: "worker",
+						ownerName: "owner",
+						ownerSessionId: created.metadata.ownerSessionId,
+						token: "bootstrap-held-assignment",
+						spawnTaskId: "spawn-request-held-assignment",
+					},
+					sessionId: "held-assignment-session",
+					runtimeId: "runtime-held-assignment",
+					backend: "pi",
+				});
+				await expect(
+					readCrewAddRequestReplay?.(created.roomDir, "req-held-assignment"),
+				).resolves.toMatchObject({
+					replay: {
+						delivery_state: "held",
+						delivery: { state: "held" },
+					},
+				});
+
+				const appended = await appendMessage(created.roomDir, {
+					from: "owner",
+					to: "held-worker",
+					broadcast: false,
+					replyTo: null,
+					kind: "task",
+					summary: "Wait behind the hold gate",
+				});
+				expect(appended.summary).toBe("Wait behind the hold gate");
+
+				await expect(loadRoomMemberState(created.roomDir, "held-worker")).resolves.toMatchObject({
+					currentTask: null,
+					currentTaskMessageId: null,
+					state: "idle",
+				});
+				const persisted = await readCrewAddRequestReplay?.(
+					created.roomDir,
+					"req-held-assignment",
+				);
+				expect(persisted?.replay?.delivery).toMatchObject({
+					activation: "manual",
+					state: "held",
+					hold_expires_at: "2026-05-26T00:01:00.000Z",
+					opened_at: null,
+				});
 			});
 		});
 

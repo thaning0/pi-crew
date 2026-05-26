@@ -2,15 +2,21 @@ import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { shouldDeliverMessage } from "./dispatch.ts";
+import {
+	shouldDeliverMessage,
+	shouldQueueCallerDirectedMessage,
+} from "./dispatch.ts";
 import { withFileLock, type FileLockOptions } from "./lock.ts";
 import { createRoomLogger } from "./logger.ts";
 import { buildCrewLifecycleEvent } from "./integration-events.ts";
 import type {
+	CrewAddActivation,
+	CrewAddReplayDeliveryGate,
 	CrewAddReplayableEvent,
 	CrewAddReplayLifecycleSnapshot,
 	CrewAddReplayRecord,
 	CrewAddReplaySeed,
+	CrewReplayDeliveryState,
 	RoomBackend,
 	RoomBootstrap,
 	RoomMemberState,
@@ -33,6 +39,7 @@ export interface RoomMutationProxy {
 
 export type SessionClaimMutationResult = RoomMemberState & {
 	claimedEvent: CrewAddReplayableEvent | null;
+	activatedEvent: CrewAddReplayableEvent | null;
 };
 
 const roomProxyServers = new Map<string, RoomMutationProxy>();
@@ -843,16 +850,116 @@ function normalizeCrewAddReplaySeed(seed: CrewAddReplaySeed & {
 	};
 }
 
+function normalizeReplayDeliveryGate(
+	delivery: CrewAddReplayLifecycleSnapshot["delivery"],
+	fallback: {
+		activation: CrewAddActivation | null;
+		delivery_state: CrewReplayDeliveryState | null;
+		hold_expires_at: string | null;
+		updated_at: string;
+	},
+): CrewAddReplayDeliveryGate | null {
+	const activation = delivery?.activation ?? fallback.activation;
+	if (!activation) {
+		return null;
+	}
+	const state = delivery?.state ?? fallback.delivery_state;
+	if (!state) {
+		return null;
+	}
+	const normalized: CrewAddReplayDeliveryGate = {
+		activation,
+		state,
+		hold_expires_at:
+			delivery?.hold_expires_at
+			?? fallback.hold_expires_at
+			?? null,
+		opened_at: delivery?.opened_at ?? null,
+		released_at: delivery?.released_at ?? null,
+		aborted_at: delivery?.aborted_at ?? null,
+		ended_at: delivery?.ended_at ?? null,
+	};
+	if (normalized.state === "enabled" && !normalized.opened_at) {
+		normalized.opened_at = fallback.updated_at;
+		if (normalized.activation === "manual") {
+			normalized.released_at = normalized.released_at ?? fallback.updated_at;
+		}
+	}
+	if (normalized.state === "ended" && !normalized.ended_at) {
+		normalized.ended_at = fallback.updated_at;
+	}
+	if (normalized.state !== "held") {
+		normalized.hold_expires_at = null;
+	}
+	return normalized;
+}
+
+function transitionReplayDeliveryGate(options: {
+	previous?: CrewAddReplayDeliveryGate | null;
+	activation: CrewAddActivation | null;
+	state: CrewReplayDeliveryState | null;
+	hold_expires_at?: string | null;
+	updated_at: string;
+}): CrewAddReplayDeliveryGate | null {
+	const activation = options.activation ?? options.previous?.activation ?? null;
+	const state = options.state ?? options.previous?.state ?? null;
+	if (!activation || !state) {
+		return null;
+	}
+	const next: CrewAddReplayDeliveryGate = {
+		activation,
+		state,
+		hold_expires_at:
+			state === "held"
+				? options.hold_expires_at
+					?? options.previous?.hold_expires_at
+					?? null
+				: null,
+		opened_at: options.previous?.opened_at ?? null,
+		released_at: options.previous?.released_at ?? null,
+		aborted_at: options.previous?.aborted_at ?? null,
+		ended_at: options.previous?.ended_at ?? null,
+	};
+	if (state === "enabled" && !next.opened_at) {
+		next.opened_at = options.updated_at;
+	}
+	if (
+		state === "enabled" &&
+		activation === "manual" &&
+		options.previous?.state !== "enabled" &&
+		!next.released_at
+	) {
+		next.released_at = options.updated_at;
+	}
+	if (state === "ended" && !next.ended_at) {
+		next.ended_at = options.updated_at;
+	}
+	return next;
+}
+
+function normalizeCrewAddReplaySnapshot(
+	replay: CrewAddReplayLifecycleSnapshot,
+): CrewAddReplayLifecycleSnapshot {
+	const normalizedDelivery = normalizeReplayDeliveryGate(replay.delivery, {
+		activation: replay.activation,
+		delivery_state: replay.delivery_state,
+		hold_expires_at: replay.hold_expires_at,
+		updated_at: replay.updated_at,
+	});
+	return {
+		...replay,
+		activation: replay.activation === "manual" ? "manual" : "immediate",
+		delivery_state: normalizedDelivery?.state ?? replay.delivery_state,
+		hold_expires_at: normalizedDelivery?.hold_expires_at ?? replay.hold_expires_at,
+		delivery: normalizedDelivery,
+	};
+}
+
 function normalizeCrewAddReplayRecord(record: CrewAddReplayRecord): CrewAddReplayRecord {
 	return {
 		...record,
 		activation: record.activation === "manual" ? "manual" : "immediate",
-		replay: record.replay
-			? {
-				...record.replay,
-				activation: record.replay.activation === "manual" ? "manual" : "immediate",
-			}
-			: null,
+		replay: record.replay ? normalizeCrewAddReplaySnapshot(record.replay) : null,
 	};
 }
 
@@ -997,6 +1104,20 @@ function buildCrewAddReplayLifecycleSnapshot(options: {
 		)
 			? previous
 			: null;
+	const previousDelivery = normalizeReplayDeliveryGate(previous?.delivery, {
+		activation: previous?.activation ?? options.record.activation,
+		delivery_state: previous?.delivery_state ?? null,
+		hold_expires_at: previous?.hold_expires_at ?? null,
+		updated_at: previous?.updated_at ?? updatedAt,
+	});
+	const effectiveEvent = preservedSpawnEvent ?? preservedClaimEvent ?? derivedEvent ?? previous ?? null;
+	const delivery = transitionReplayDeliveryGate({
+		previous: previousDelivery,
+		activation: effectiveEvent?.activation ?? options.record.activation,
+		state: effectiveEvent?.delivery_state ?? null,
+		hold_expires_at: effectiveEvent?.hold_expires_at ?? null,
+		updated_at: updatedAt,
+	});
 	return {
 		event_id: preservedSpawnEvent?.event_id ?? preservedClaimEvent?.event_id ?? derivedEvent?.event_id ?? previous?.event_id ?? null,
 		event: preservedSpawnEvent?.event ?? preservedClaimEvent?.event ?? derivedEvent?.event ?? previous?.event ?? null,
@@ -1038,18 +1159,9 @@ function buildCrewAddReplayLifecycleSnapshot(options: {
 			?? options.record.metadata
 			?? previous?.metadata
 			?? null,
-		delivery_state:
-			preservedSpawnEvent?.delivery_state
-			?? preservedClaimEvent?.delivery_state
-			?? derivedEvent?.delivery_state
-			?? previous?.delivery_state
-			?? null,
-		hold_expires_at:
-			preservedSpawnEvent?.hold_expires_at
-			?? preservedClaimEvent?.hold_expires_at
-			?? derivedEvent?.hold_expires_at
-			?? previous?.hold_expires_at
-			?? null,
+		delivery_state: delivery?.state ?? null,
+		hold_expires_at: delivery?.hold_expires_at ?? null,
+		delivery,
 		error:
 			preservedSpawnEvent?.error
 			?? preservedClaimEvent?.error
@@ -1076,6 +1188,19 @@ function buildReplaySnapshotFromEvent(options: {
 	job: RoomSpawnJob | null;
 	updatedAt: string;
 }): CrewAddReplayLifecycleSnapshot {
+	const previousDelivery = normalizeReplayDeliveryGate(options.record.replay?.delivery, {
+		activation: options.record.replay?.activation ?? options.record.activation,
+		delivery_state: options.record.replay?.delivery_state ?? null,
+		hold_expires_at: options.record.replay?.hold_expires_at ?? null,
+		updated_at: options.record.replay?.updated_at ?? options.updatedAt,
+	});
+	const delivery = transitionReplayDeliveryGate({
+		previous: previousDelivery,
+		activation: options.event.activation ?? options.record.activation,
+		state: options.event.delivery_state ?? null,
+		hold_expires_at: options.event.hold_expires_at ?? null,
+		updated_at: options.updatedAt,
+	});
 	return {
 		event_id: options.event.event_id,
 		event: options.event.event,
@@ -1095,8 +1220,9 @@ function buildReplaySnapshotFromEvent(options: {
 			?? null,
 		activation: options.event.activation ?? options.record.activation,
 		metadata: options.event.metadata ?? options.record.metadata ?? null,
-		delivery_state: options.event.delivery_state ?? null,
-		hold_expires_at: options.event.hold_expires_at ?? null,
+		delivery_state: delivery?.state ?? options.event.delivery_state ?? null,
+		hold_expires_at: delivery?.hold_expires_at ?? options.event.hold_expires_at ?? null,
+		delivery,
 		error: options.event.error ?? null,
 		reason: options.event.reason ?? null,
 		member_state: options.member?.state ?? options.record.replay?.member_state ?? null,
@@ -1247,6 +1373,26 @@ export async function readCrewAddRequestReplay(roomDir: string, requestId: strin
 	} catch {
 		return null;
 	}
+}
+
+export function getCrewAddReplayDeliveryGate(
+	record: CrewAddReplayRecord | null | undefined,
+): CrewAddReplayDeliveryGate | null {
+	return record?.replay?.delivery ?? null;
+}
+
+export async function readMemberDeliveryGate(
+	roomDir: string,
+	member: RoomMemberState | string,
+): Promise<CrewAddReplayDeliveryGate | null> {
+	const loadedMember = typeof member === "string"
+		? await loadRoomMemberState(roomDir, member).catch(() => null)
+		: member;
+	if (!loadedMember?.requestId) {
+		return null;
+	}
+	const replay = await readCrewAddRequestReplay(roomDir, loadedMember.requestId);
+	return getCrewAddReplayDeliveryGate(replay);
 }
 
 export async function prepareCrewAddReplay(roomDir: string, requestId: string): Promise<CrewAddReplayRecord | null> {
@@ -1617,10 +1763,15 @@ function resolveRuntimeIdentitySource(options: {
 }
 
 function replayEventHasPersistedClaim(event: CrewAddReplayRecord["replay"]): boolean {
-	return event?.event === "claimed"
-		|| event?.event === "held"
-		|| event?.event === "enabled"
-		|| event?.event === "ended";
+	if (!event) {
+		return false;
+	}
+	const deliveryState = event.delivery?.state ?? event.delivery_state ?? null;
+	return event.event === "claimed"
+		|| event.event === "ended"
+		|| deliveryState === "held"
+		|| deliveryState === "enabled"
+		|| deliveryState === "ended";
 }
 
 function buildCrewClaimedReplayEvent(options: {
@@ -1630,9 +1781,11 @@ function buildCrewClaimedReplayEvent(options: {
 	roomId: string;
 }): CrewAddReplayableEvent {
 	const previous = options.record.replay;
+	const previousDeliveryState = previous?.delivery_state ?? null;
 	const deliveryState =
-		previous?.delivery_state
-		?? (options.record.activation === "manual" ? "held" : "enabled");
+		previousDeliveryState && previousDeliveryState !== "pending"
+			? previousDeliveryState
+			: (options.record.activation === "manual" ? "held" : "enabled");
 	const holdExpiresAt = deliveryState === "held"
 		? (previous?.hold_expires_at ?? null)
 		: null;
@@ -1666,23 +1819,52 @@ async function maybePersistFirstClaimEventLocked(options: {
 	previousMember: RoomMemberState | null;
 	nextMember: RoomMemberState;
 	job: RoomSpawnJob | null;
-}): Promise<CrewAddReplayableEvent | null> {
+}): Promise<{
+	claimedEvent: CrewAddReplayableEvent | null;
+	activatedEvent: CrewAddReplayableEvent | null;
+}> {
 	if (!options.nextMember.requestId || !options.nextMember.sessionId) {
-		return null;
+		return { claimedEvent: null, activatedEvent: null };
 	}
 	const record = await readCrewAddRequestReplay(options.roomDir, options.nextMember.requestId);
 	if (!record) {
-		return null;
+		return { claimedEvent: null, activatedEvent: null };
 	}
-	if (options.previousMember?.sessionId || replayEventHasPersistedClaim(record.replay)) {
-		return null;
+	const isInitialClaimFromSpawningMember =
+		!options.previousMember?.sessionId && options.previousMember?.state === "spawning";
+	if (
+		options.previousMember?.sessionId
+		|| (replayEventHasPersistedClaim(record.replay) && !isInitialClaimFromSpawningMember)
+	) {
+		return { claimedEvent: null, activatedEvent: null };
 	}
+	const previousDelivery = getCrewAddReplayDeliveryGate(record);
 	const claimedEvent = buildCrewClaimedReplayEvent({
 		record,
 		member: options.nextMember,
 		job: options.job,
 		roomId: options.roomId,
 	});
+	const activatedEvent = record.activation === "immediate"
+		? buildCrewLifecycleEvent({
+			event: "enabled",
+			phase: "delivery",
+			request_id: claimedEvent.request_id,
+			command_id: claimedEvent.command_id,
+			requested_name: claimedEvent.requested_name,
+			member_target: claimedEvent.member_target,
+			member_type: claimedEvent.member_type,
+			room_id: claimedEvent.room_id,
+			spawn_task_id: claimedEvent.spawn_task_id,
+			runtime_id: claimedEvent.runtime_id,
+			activation: claimedEvent.activation,
+			metadata: claimedEvent.metadata,
+			delivery_state: "enabled",
+			hold_expires_at: null,
+			error: null,
+			reason: null,
+		})
+		: null;
 	const updatedAt = options.nextMember.updatedAt;
 	await writeCrewAddRequestReplayFile(options.roomDir, {
 		...record,
@@ -1696,14 +1878,14 @@ async function maybePersistFirstClaimEventLocked(options: {
 			?? null,
 		replay: buildReplaySnapshotFromEvent({
 			record,
-			event: claimedEvent,
+			event: activatedEvent ?? claimedEvent,
 			member: options.nextMember,
 			job: options.job,
 			updatedAt,
 		}),
 		updated_at: updatedAt,
 	});
-	return claimedEvent;
+	return { claimedEvent, activatedEvent };
 }
 
 function hasBootstrapClaim(current: RoomMemberState, job: RoomSpawnJob): boolean {
@@ -1824,7 +2006,7 @@ export async function claimMemberSession(options: {
 		};
 
 		await writeRoomMemberState(options.bootstrap.roomDir, next);
-		const claimedEvent = await maybePersistFirstClaimEventLocked({
+		const { claimedEvent, activatedEvent } = await maybePersistFirstClaimEventLocked({
 			roomDir: options.bootstrap.roomDir,
 			roomId: options.bootstrap.roomId,
 			previousMember,
@@ -1837,7 +2019,7 @@ export async function claimMemberSession(options: {
 			sessionId: next.sessionId,
 			runtimeId: next.runtimeId,
 		});
-		return { ...next, claimedEvent };
+		return { ...next, claimedEvent, activatedEvent };
 	});
 }
 
@@ -2110,14 +2292,14 @@ export async function markMemberJoined(options: {
 			bootstrapToken: expectedBootstrapToken ?? current.bootstrapToken ?? bootstrap.token,
 		};
 		await writeRoomMemberState(bootstrap.roomDir, next);
-		const claimedEvent = await maybePersistFirstClaimEventLocked({
+		const { claimedEvent, activatedEvent } = await maybePersistFirstClaimEventLocked({
 			roomDir: bootstrap.roomDir,
 			roomId: bootstrap.roomId,
 			previousMember: current,
 			nextMember: next,
 			job: spawnJob,
 		});
-		return { ...next, claimedEvent };
+		return { ...next, claimedEvent, activatedEvent };
 	});
 }
 
@@ -2237,11 +2419,38 @@ function getTaskTargetNames(message: { to: "room" | string; mentions?: string[];
 	return [...targets];
 }
 
+function appendUniqueMessageId(
+	ids: string[] | null | undefined,
+	messageId: string,
+): string[] {
+	const next = ids ? [...ids] : [];
+	if (!next.includes(messageId)) {
+		next.push(messageId);
+	}
+	return next;
+}
+
+function removeQueuedMessageIds(
+	ids: string[] | null | undefined,
+	messageIds: Iterable<string>,
+): string[] | null {
+	if (!ids || ids.length === 0) {
+		return null;
+	}
+	const removals = new Set(messageIds);
+	const next = ids.filter((messageId) => !removals.has(messageId));
+	return next.length > 0 ? next : null;
+}
+
+function hasQueuedTaskReservation(target: RoomMemberState): boolean {
+	return Boolean(target.queuedTaskMessageIds?.length);
+}
+
 async function assertTaskTargetAvailable(roomDir: string, target: RoomMemberState): Promise<void> {
 	// Gate on unclosed task ownership only, not on raw lifecycle state.
 	// A member can be idle while holding a task (e.g. waiting for deps),
 	// and that still counts as occupied.
-	if (target.currentTaskMessageId || target.currentTask) {
+	if (target.currentTaskMessageId || target.currentTask || hasQueuedTaskReservation(target)) {
 		throw new MemberNotAvailableError(target.name, "already has an unclosed task");
 	}
 	if (isStoppedMemberTombstone(target)) {
@@ -2344,6 +2553,9 @@ export async function appendMessage(
 				if (!target || target.state === "removed") {
 					throw new MemberNotFoundError(name);
 				}
+				const deliveryGate = await readMemberDeliveryGate(roomDir, target).catch(
+					() => null,
+				);
 				if (message.kind === "task") {
 					await assertTaskTargetAvailable(roomDir, target);
 				} else if (message.kind !== "cancelled") {
@@ -2354,7 +2566,7 @@ export async function appendMessage(
 					// (exists, not removed) are sufficient.
 					await assertDirectedTargetAvailable(roomDir, target);
 				}
-				return target;
+				return { target, deliveryGate };
 			}),
 		);
 
@@ -2378,9 +2590,30 @@ export async function appendMessage(
 		await writeJsonAtomic(getRoomMessagePath(roomDir, complete.seq, complete.id), complete);
 		await writeRoomMetadata(roomDir, { ...metadata, nextSeq: nextSeq + 1 });
 
-		const taskTargets = targets.filter(() => message.kind === "task");
-		await Promise.all(taskTargets.map(target =>
-			writeRoomMemberState(roomDir, {
+		await Promise.all(targets.map(({ target, deliveryGate }) => {
+			const queuedWhileHeld = shouldQueueCallerDirectedMessage(
+				complete,
+				target.name,
+				deliveryGate,
+			);
+			if (queuedWhileHeld) {
+				return writeRoomMemberState(roomDir, {
+					...target,
+					queuedDeliveryMessageIds: appendUniqueMessageId(
+						target.queuedDeliveryMessageIds,
+						complete.id,
+					),
+					queuedTaskMessageIds:
+						complete.kind === "task"
+							? appendUniqueMessageId(target.queuedTaskMessageIds, complete.id)
+							: target.queuedTaskMessageIds ?? null,
+					updatedAt: new Date().toISOString(),
+				});
+			}
+			if (complete.kind !== "task") {
+				return Promise.resolve();
+			}
+			return writeRoomMemberState(roomDir, {
 				...target,
 				// Owner-side assignment never means the new task has already started.
 				// If a task-free member was still marked running, normalize it back to
@@ -2391,8 +2624,8 @@ export async function appendMessage(
 				currentTaskMessageId: complete.id,
 				lastError: null,
 				updatedAt: new Date().toISOString(),
-			}),
-		));
+			});
+		}));
 
 		return complete;
 	});
@@ -2484,9 +2717,12 @@ export async function resolveTaskSeqByMessageId(
 
 export async function getLastDeliverableMessageSeq(roomDir: string, memberName: string): Promise<number> {
 	const messages = await listBoardEntries(roomDir, Number.MAX_SAFE_INTEGER);
+	const deliveryGate = await readMemberDeliveryGate(roomDir, memberName).catch(
+		() => null,
+	);
 	let lastSeq = 0;
 	for (const message of messages) {
-		if (!shouldDeliverMessage(message, memberName)) continue;
+		if (!shouldDeliverMessage(message, memberName, deliveryGate)) continue;
 		lastSeq = Math.max(lastSeq, message.seq);
 	}
 	return lastSeq;

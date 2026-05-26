@@ -1,5 +1,11 @@
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildCrewLifecycleEvent } from "./integration-events.ts";
 import { setActiveRoom, resetActiveRoomsForTests } from "./lifecycle.ts";
+import { activateBootstrapRoom } from "./lifecycle.ts";
+import { createRoom, createSpawningMember, persistCrewAddReplayEvent } from "./storage.ts";
 
 const { queueCrewAddMock } = vi.hoisted(() => ({
 	queueCrewAddMock: vi.fn(),
@@ -65,6 +71,15 @@ function setOwnerRoom(sessionId = "owner-session"): void {
 		pendingDeliveryBatch: [],
 		deliveryTimer: null,
 	});
+}
+
+async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "crew-event-feedback-test-"));
+	try {
+		return await fn(dir);
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+	}
 }
 
 async function cacheProjectCwd(
@@ -469,5 +484,105 @@ describe("crew:add request feedback", () => {
 				reason: "request-id-conflict",
 			}),
 		);
+	});
+
+	it("emits activated exactly once when an immediate generation first opens delivery", async () => {
+		await withTempDir(async (tempDir) => {
+			const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+			const created = await createRoom({
+				runtimeRoot,
+				ownerName: "owner",
+				ownerSessionId: "owner-session-activated",
+				cwd: tempDir,
+				ownerPid: process.pid,
+			});
+
+			await createSpawningMember(created.roomDir, {
+				name: "immediate-worker",
+				displayName: "immediate-worker",
+				type: "worker",
+				backend: "pi",
+				taskId: "spawn-activated-immediate",
+				bootstrapToken: "bootstrap-activated-immediate",
+				requestReplay: {
+					requestId: "req-activated-immediate",
+					requestedName: "immediate-worker",
+					type: "worker",
+					model: null,
+					task: null,
+					transient: false,
+					metadata: { source: "event-feedback" },
+					activation: "immediate",
+					holdTimeoutMs: null,
+				},
+			} as never);
+
+			vi.stubEnv("PI_ROOM_ID", created.metadata.roomId);
+			vi.stubEnv("PI_ROOM_DIR", created.roomDir);
+			vi.stubEnv("PI_ROOM_MEMBER_NAME", "immediate-worker");
+			vi.stubEnv("PI_ROOM_MEMBER_TYPE", "worker");
+			vi.stubEnv("PI_ROOM_BOOTSTRAP_TOKEN", "bootstrap-activated-immediate");
+			vi.stubEnv("PI_ROOM_OWNER_NAME", "owner");
+			vi.stubEnv("PI_ROOM_OWNER_SESSION_ID", created.metadata.ownerSessionId);
+
+			const emit = vi.fn(async () => undefined);
+			const pi = {
+				events: { emit },
+				sendMessage: vi.fn(),
+			} as any;
+			const adapters = {
+				pi: { kind: "pi", async spawn() { throw new Error("not used"); } },
+				paseo: { kind: "paseo", async spawn() { throw new Error("not used"); } },
+			};
+
+			await activateBootstrapRoom(
+				pi,
+				"",
+				"immediate-worker-session",
+				adapters as any,
+			);
+			await persistCrewAddReplayEvent({
+				roomDir: created.roomDir,
+				requestId: "req-activated-immediate",
+				event: buildCrewLifecycleEvent({
+					event: "enabled",
+					phase: "delivery",
+					request_id: "req-activated-immediate",
+					command_id: null,
+					requested_name: "immediate-worker",
+					member_target: "immediate-worker",
+					member_type: "worker",
+					room_id: created.metadata.roomId,
+					spawn_task_id: "spawn-activated-immediate",
+					runtime_id: "immediate-worker-session",
+					activation: "immediate",
+					metadata: { source: "event-feedback" },
+					delivery_state: "enabled",
+					hold_expires_at: null,
+					error: null,
+					reason: null,
+				}),
+			});
+			resetActiveRoomsForTests();
+			await activateBootstrapRoom(
+				pi,
+				"",
+				"immediate-worker-session",
+				adapters as any,
+			);
+
+			const activatedCalls = emit.mock.calls.filter(
+				([eventName, payload]) => eventName === "crew:event" && payload?.event === "enabled",
+			);
+			expect(activatedCalls).toHaveLength(1);
+			expect(activatedCalls[0]?.[1]).toMatchObject({
+				event: "enabled",
+				request_id: "req-activated-immediate",
+				member_target: "immediate-worker",
+				spawn_task_id: "spawn-activated-immediate",
+				activation: "immediate",
+				delivery_state: "enabled",
+			});
+		});
 	});
 });

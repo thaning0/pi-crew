@@ -6,6 +6,7 @@ import {
 	applyOutgoingMessageState,
 	deliverRoomMessagesBatch,
 	isMessageTargetedToMember,
+	shouldQueueCallerDirectedMessage,
 	shouldDeliverMessage,
 } from "./dispatch.ts";
 import {
@@ -17,6 +18,7 @@ import {
 	listRoomMembers,
 	listBoardEntriesAfterSeq,
 	loadRoomMemberState,
+	readMemberDeliveryGate,
 	readMessage,
 	readSpawnJob,
 	markMemberJoined,
@@ -91,6 +93,18 @@ async function emitClaimedFeedback(
 		await pi.events.emit("crew:event", claimedEvent);
 	} catch {
 		// Best-effort only: claim feedback must not fail lifecycle activation.
+	}
+}
+
+async function emitActivatedFeedback(
+	pi: ExtensionAPI,
+	activatedEvent: CrewAddReplayableEvent | null | undefined,
+): Promise<void> {
+	if (!activatedEvent) return;
+	try {
+		await pi.events.emit("crew:event", activatedEvent);
+	} catch {
+		// Best-effort only: activation feedback must not block lifecycle activation.
 	}
 }
 const ownerClassificationUnavailableSessions = new Set<string>();
@@ -204,6 +218,29 @@ function createRoomNameFormatter(
 		members.map((member) => [member.name, formatMemberLabel(member)]),
 	);
 	return (name: string) => labels.get(name) ?? name;
+}
+
+function appendUniqueQueuedId(
+	ids: string[] | null | undefined,
+	messageId: string,
+): string[] {
+	const next = ids ? [...ids] : [];
+	if (!next.includes(messageId)) {
+		next.push(messageId);
+	}
+	return next;
+}
+
+function removeQueuedIds(
+	ids: string[] | null | undefined,
+	messageIds: Iterable<string>,
+): string[] | null {
+	if (!ids || ids.length === 0) {
+		return null;
+	}
+	const removals = new Set(messageIds);
+	const next = ids.filter((messageId) => !removals.has(messageId));
+	return next.length > 0 ? next : null;
 }
 
 export function resetActiveRoomsForTests(): void {
@@ -458,19 +495,84 @@ export async function processUnreadMessages(
 		return;
 	}
 
+	const deliveryGate = await readMemberDeliveryGate(
+		context.roomDir,
+		current,
+	).catch(() => null);
 	const unreadMessages = await listBoardEntriesAfterSeq(
 		context.roomDir,
 		current.lastSeenSeq,
 	);
+	const queuedDeliveryIds = current.queuedDeliveryMessageIds ?? [];
+	const queuedBoardEntries =
+		deliveryGate?.state === "enabled" && queuedDeliveryIds.length > 0
+			? await listBoardEntries(context.roomDir, Number.MAX_SAFE_INTEGER)
+			: null;
+	const queuedMessages = queuedBoardEntries
+		? queuedBoardEntries
+				.filter((entry) => queuedDeliveryIds.includes(entry.id))
+				.sort((left, right) => left.seq - right.seq)
+		: [];
+	const missingQueuedIds =
+		queuedBoardEntries && queuedDeliveryIds.length > 0
+			? queuedDeliveryIds.filter(
+					(messageId) => !queuedBoardEntries.some((entry) => entry.id === messageId),
+				)
+			: [];
 
-	if (unreadMessages.length === 0) return;
+	if (unreadMessages.length === 0 && queuedMessages.length === 0 && missingQueuedIds.length === 0) return;
 
 	let member = current;
 	let boardEntriesCache: RoomMessage[] | null = null;
 	const deliverable: Array<{ message: RoomMessage; isNewTask: boolean }> = [];
-
+	const processedQueuedIds = new Set<string>();
+	const pendingMessagesById = new Map<string, {
+		message: RoomMessage;
+		source: "queued" | "unread";
+		advanceSeen: boolean;
+	}>();
+	for (const message of queuedMessages) {
+		pendingMessagesById.set(message.id, {
+			message,
+			source: "queued",
+			advanceSeen: false,
+		});
+	}
 	for (const message of unreadMessages) {
+		const existing = pendingMessagesById.get(message.id);
+		if (existing) {
+			pendingMessagesById.set(message.id, {
+				...existing,
+				advanceSeen: true,
+			});
+			continue;
+		}
+		pendingMessagesById.set(message.id, {
+			message,
+			source: "unread",
+			advanceSeen: true,
+		});
+	}
+	const pendingMessages = [...pendingMessagesById.values()]
+		.sort((left, right) => left.message.seq - right.message.seq);
+
+	if (missingQueuedIds.length > 0) {
+		member = {
+			...member,
+			queuedDeliveryMessageIds: removeQueuedIds(
+				member.queuedDeliveryMessageIds,
+				missingQueuedIds,
+			),
+			queuedTaskMessageIds: removeQueuedIds(
+				member.queuedTaskMessageIds,
+				missingQueuedIds,
+			),
+		};
+	}
+
+	for (const { message, source, advanceSeen } of pendingMessages) {
 		const alreadyAcknowledgedSelfReply =
+			source === "unread" &&
 			context.role === "member" &&
 			message.from === context.memberName &&
 			member.pendingSelfAckMessageId === message.id;
@@ -480,8 +582,48 @@ export async function processUnreadMessages(
 			continue;
 		}
 
-		if (message.silent === true) {
+		if (source === "unread" && message.silent === true) {
 			member = { ...member, lastSeenSeq: message.seq };
+			continue;
+		}
+
+		if (
+			source === "unread" &&
+			message.kind === "cancelled" &&
+			message.replyTo &&
+			(member.queuedDeliveryMessageIds?.includes(message.replyTo) ?? false) &&
+			!processedQueuedIds.has(message.replyTo)
+		) {
+			member = {
+				...member,
+				queuedDeliveryMessageIds: removeQueuedIds(
+					member.queuedDeliveryMessageIds,
+					[message.replyTo],
+				),
+				queuedTaskMessageIds: removeQueuedIds(member.queuedTaskMessageIds, [
+					message.replyTo,
+				]),
+				lastSeenSeq: message.seq,
+			};
+			continue;
+		}
+
+		if (
+			source === "unread" &&
+			shouldQueueCallerDirectedMessage(message, context.memberName, deliveryGate)
+		) {
+			member = {
+				...member,
+				queuedDeliveryMessageIds: appendUniqueQueuedId(
+					member.queuedDeliveryMessageIds,
+					message.id,
+				),
+				queuedTaskMessageIds:
+					message.kind === "task"
+						? appendUniqueQueuedId(member.queuedTaskMessageIds, message.id)
+						: member.queuedTaskMessageIds ?? null,
+				lastSeenSeq: message.seq,
+			};
 			continue;
 		}
 
@@ -489,6 +631,7 @@ export async function processUnreadMessages(
 		member = applyIncomingMessageState(
 			applyOutgoingMessageState(member, message),
 			message,
+			source === "queued" ? null : deliveryGate,
 		);
 
 		// Async readiness check: when member receives their current task and
@@ -545,7 +688,11 @@ export async function processUnreadMessages(
 		}
 
 		const shouldDeliver =
-			shouldDeliverMessage(message, context.memberName) ||
+			shouldDeliverMessage(
+				message,
+				context.memberName,
+				source === "queued" ? null : deliveryGate,
+			) ||
 			(message.to === "room" &&
 				context.role === "owner" &&
 				message.from !== context.memberName &&
@@ -559,7 +706,28 @@ export async function processUnreadMessages(
 			}
 		}
 
-		member = { ...member, lastSeenSeq: message.seq };
+		if (source === "queued") {
+			processedQueuedIds.add(message.id);
+			if (advanceSeen && message.seq > member.lastSeenSeq) {
+				member = { ...member, lastSeenSeq: message.seq };
+			}
+		} else {
+			member = { ...member, lastSeenSeq: message.seq };
+		}
+	}
+
+	if (processedQueuedIds.size > 0) {
+		member = {
+			...member,
+			queuedDeliveryMessageIds: removeQueuedIds(
+				member.queuedDeliveryMessageIds,
+				processedQueuedIds,
+			),
+			queuedTaskMessageIds: removeQueuedIds(
+				member.queuedTaskMessageIds,
+				processedQueuedIds,
+			),
+		};
 	}
 
 	// Write updated state via updateRoomMemberState (goes through mutation
@@ -694,6 +862,10 @@ export async function activateBootstrapRoom(
 	await emitClaimedFeedback(
 		pi,
 		(joined as { claimedEvent?: CrewAddReplayableEvent | null }).claimedEvent,
+	);
+	await emitActivatedFeedback(
+		pi,
+		(joined as { activatedEvent?: CrewAddReplayableEvent | null }).activatedEvent,
 	);
 
 	// If another session already owns this member (claimMemberSession

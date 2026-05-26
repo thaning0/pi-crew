@@ -1,15 +1,27 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { appendMessage, createRoom, listBoardEntries, loadRoomMemberState, resolveTaskSeqByMessageId, writeRoomMemberState } from "./storage.ts";
+import {
+	appendMessage,
+	createRoom,
+	createSpawningMember,
+	listBoardEntries,
+	loadRoomMemberState,
+	markMemberJoined,
+	persistCrewAddReplayEvent,
+	readSpawnJob,
+	resolveTaskSeqByMessageId,
+	writeRoomMemberState,
+} from "./storage.ts";
 import { processUnreadMessages, resetActiveRoomsForTests, setActiveRoom } from "./lifecycle.ts";
 import { executeCrewTasks, executeCrewTell, collectCrewWhoEntries } from "./tools.ts";
 import { createPiMemberAdapter, createPaseoPiMemberAdapter } from "./spawn.ts";
 import { recordTerminalTaskState, appendTerminalTaskReplyAndNotify } from "./task-terminal.ts";
 import { clearRoomDeps } from "./deps.ts";
 import type { RoomMemberState } from "./types.ts";
+import { buildCrewLifecycleEvent } from "./integration-events.ts";
 
 async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "crew-state-derivation-test-"));
@@ -90,6 +102,87 @@ async function createRoomWithWorkers(tempDir: string, ownerSessionId = "owner-se
 	await writeRoomMemberState(created.roomDir, createMemberState("worker_a"));
 	await writeRoomMemberState(created.roomDir, createMemberState("worker_b"));
 	return { created, runtimeRoot };
+}
+
+async function createReplayableClaimedMember(
+	created: Awaited<ReturnType<typeof createRoom>>,
+	options: {
+		memberName: string;
+		activation: "immediate" | "manual";
+		requestId: string;
+		taskId: string;
+		holdExpiresAt?: string | null;
+	},
+) {
+	const spawned = await createSpawningMember(created.roomDir, {
+		name: options.memberName,
+		displayName: options.memberName,
+		type: "worker",
+		backend: "pi",
+		taskId: options.taskId,
+		bootstrapToken: `bootstrap-${options.requestId}`,
+		requestReplay: {
+			requestId: options.requestId,
+			requestedName: options.memberName,
+			type: "worker",
+			model: null,
+			task: null,
+			transient: false,
+			metadata: { source: "state-derivation" },
+			activation: options.activation,
+			holdTimeoutMs:
+				options.activation === "manual" && options.holdExpiresAt ? 30_000 : null,
+		},
+	} as never);
+
+	if (options.activation === "manual" && options.holdExpiresAt) {
+		await persistCrewAddReplayEvent({
+			roomDir: created.roomDir,
+			requestId: options.requestId,
+			event: buildCrewLifecycleEvent({
+				event: "spawned",
+				phase: "spawn",
+				request_id: options.requestId,
+				command_id: null,
+				requested_name: options.memberName,
+				member_target: options.memberName,
+				member_type: "worker",
+				room_id: created.metadata.roomId,
+				spawn_task_id: options.taskId,
+				runtime_id: null,
+				activation: "manual",
+				metadata: { source: "state-derivation" },
+				delivery_state: "held",
+				hold_expires_at: options.holdExpiresAt,
+				error: null,
+				reason: null,
+			}),
+			member: spawned.member,
+			job: spawned.job,
+		});
+	}
+
+	await markMemberJoined({
+		bootstrap: {
+			version: 1,
+			roomId: created.metadata.roomId,
+			roomDir: created.roomDir,
+			memberName: options.memberName,
+			memberType: "worker",
+			ownerName: created.metadata.ownerName,
+			ownerSessionId: created.metadata.ownerSessionId,
+			token: `bootstrap-${options.requestId}`,
+			spawnTaskId: options.taskId,
+		},
+		sessionId: `${options.memberName}-session`,
+		runtimeId: `runtime-${options.memberName}`,
+		backend: "pi",
+	});
+
+	const member = await loadRoomMemberState(created.roomDir, options.memberName);
+	const job = await readSpawnJob(created.roomDir, options.taskId);
+	if (!job) throw new Error(`missing spawn job ${options.taskId}`);
+	return { member, job };
 }
 
 async function runCrewWho(roomDir: string, cwd: string) {
@@ -697,4 +790,334 @@ describe("crew state derivation", () => {
 		});
 	});
 
-});
+		it("keeps claimed manual members held and queues caller-directed task/info/question traffic without waking runtime", async () => {
+			await withTempDir(async (tempDir) => {
+				const { created } = await createRoomWithWorkers(tempDir, "owner-session-held-member");
+				await createReplayableClaimedMember(created, {
+					memberName: "held_worker",
+					activation: "manual",
+					requestId: "req-held-member",
+					taskId: "spawn-held-member",
+					holdExpiresAt: "2026-05-26T00:01:00.000Z",
+				});
+				const memberContext = setMemberActiveRoomContext(
+					created,
+					"held_worker-session",
+					"held_worker",
+				);
+				const pi = {
+					sendMessage: vi.fn(),
+				} as unknown as ExtensionAPI;
+
+				const heldTask = await appendMessage(created.roomDir, {
+					from: "owner",
+					to: "held_worker",
+					broadcast: false,
+					replyTo: null,
+					kind: "task",
+					summary: "Stay held for now",
+				});
+				const heldInfo = await appendMessage(created.roomDir, {
+					from: "owner",
+					to: "held_worker",
+					broadcast: false,
+					replyTo: null,
+					kind: "info",
+					summary: "Extra context while held",
+				});
+				const heldQuestion = await appendMessage(created.roomDir, {
+					from: "owner",
+					to: "held_worker",
+					broadcast: false,
+					replyTo: null,
+					kind: "question",
+					summary: "Question that must wait",
+				});
+
+				await processUnreadMessages(pi, memberContext);
+
+				await expect(loadRoomMemberState(created.roomDir, "held_worker")).resolves.toMatchObject({
+					state: "idle",
+					currentTask: null,
+					currentTaskMessageId: null,
+					lastSeenSeq: heldQuestion.seq,
+					queuedDeliveryMessageIds: [heldTask.id, heldInfo.id, heldQuestion.id],
+				});
+				expect(pi.sendMessage).not.toHaveBeenCalled();
+
+				const members = await runCrewWho(created.roomDir, tempDir);
+				expect(members.find((member) => member.name === "held_worker")).toMatchObject({
+					state: "idle",
+				});
+			});
+		});
+
+		it("releases queued caller-directed traffic once delivery becomes enabled", async () => {
+			await withTempDir(async (tempDir) => {
+				vi.stubEnv("PI_ROOM_DELIVERY_DEBOUNCE_MS", "1");
+				const { created } = await createRoomWithWorkers(tempDir, "owner-session-held-release");
+				const { member, job } = await createReplayableClaimedMember(created, {
+					memberName: "held_worker",
+					activation: "manual",
+					requestId: "req-held-release",
+					taskId: "spawn-held-release",
+					holdExpiresAt: "2026-05-26T00:01:00.000Z",
+				});
+				const memberContext = setMemberActiveRoomContext(
+					created,
+					"held_worker-session",
+					"held_worker",
+				);
+				const pi = {
+					sendMessage: vi.fn(),
+				} as unknown as ExtensionAPI;
+
+				const queuedTask = await appendMessage(created.roomDir, {
+					from: "owner",
+					to: "held_worker",
+					broadcast: false,
+					replyTo: null,
+					kind: "task",
+					summary: "Run after release",
+				});
+				await appendMessage(created.roomDir, {
+					from: "owner",
+					to: "held_worker",
+					broadcast: false,
+					replyTo: null,
+					kind: "info",
+					summary: "Queued context",
+				});
+				await processUnreadMessages(pi, memberContext);
+				expect(pi.sendMessage).not.toHaveBeenCalled();
+
+				await persistCrewAddReplayEvent({
+					roomDir: created.roomDir,
+					requestId: "req-held-release",
+					event: buildCrewLifecycleEvent({
+						event: "enabled",
+						phase: "delivery",
+						request_id: "req-held-release",
+						command_id: null,
+						requested_name: "held_worker",
+						member_target: "held_worker",
+						member_type: "worker",
+						room_id: created.metadata.roomId,
+						spawn_task_id: job.taskId,
+						runtime_id: member.runtimeId,
+						activation: "manual",
+						metadata: { source: "state-derivation" },
+						delivery_state: "enabled",
+						hold_expires_at: null,
+						error: null,
+						reason: null,
+					}),
+					member,
+					job,
+				});
+
+				await processUnreadMessages(pi, memberContext);
+				await waitFor(() => pi.sendMessage.mock.calls.length > 0);
+
+				await expect(loadRoomMemberState(created.roomDir, "held_worker")).resolves.toMatchObject({
+					state: "running",
+					currentTask: "Run after release",
+					currentTaskMessageId: queuedTask.id,
+					queuedDeliveryMessageIds: null,
+				});
+				expect(pi.sendMessage).toHaveBeenCalledTimes(1);
+			});
+		});
+
+		it("delivers queued caller-directed traffic exactly once when delivery opens before the first held poll", async () => {
+			await withTempDir(async (tempDir) => {
+				vi.stubEnv("PI_ROOM_DELIVERY_DEBOUNCE_MS", "1");
+				const { created } = await createRoomWithWorkers(tempDir, "owner-session-held-open-first");
+				const { member, job } = await createReplayableClaimedMember(created, {
+					memberName: "held_worker",
+					activation: "manual",
+					requestId: "req-held-open-first",
+					taskId: "spawn-held-open-first",
+					holdExpiresAt: "2026-05-26T00:01:00.000Z",
+				});
+				const memberContext = setMemberActiveRoomContext(
+					created,
+					"held_worker-session",
+					"held_worker",
+				);
+				const pi = {
+					sendMessage: vi.fn(),
+				} as unknown as ExtensionAPI;
+
+				const queuedTask = await appendMessage(created.roomDir, {
+					from: "owner",
+					to: "held_worker",
+					broadcast: false,
+					replyTo: null,
+					kind: "task",
+					summary: "Open only once",
+				});
+
+				await persistCrewAddReplayEvent({
+					roomDir: created.roomDir,
+					requestId: "req-held-open-first",
+					event: buildCrewLifecycleEvent({
+						event: "enabled",
+						phase: "delivery",
+						request_id: "req-held-open-first",
+						command_id: null,
+						requested_name: "held_worker",
+						member_target: "held_worker",
+						member_type: "worker",
+						room_id: created.metadata.roomId,
+						spawn_task_id: job.taskId,
+						runtime_id: member.runtimeId,
+						activation: "manual",
+						metadata: { source: "state-derivation" },
+						delivery_state: "enabled",
+						hold_expires_at: null,
+						error: null,
+						reason: null,
+					}),
+					member,
+					job,
+				});
+
+				await processUnreadMessages(pi, memberContext);
+				await waitFor(() => pi.sendMessage.mock.calls.length > 0);
+
+				await expect(loadRoomMemberState(created.roomDir, "held_worker")).resolves.toMatchObject({
+					state: "running",
+					currentTask: "Open only once",
+					currentTaskMessageId: queuedTask.id,
+					lastSeenSeq: queuedTask.seq,
+					queuedDeliveryMessageIds: null,
+				});
+				expect(pi.sendMessage).toHaveBeenCalledTimes(1);
+				expect(pi.sendMessage.mock.calls[0]?.[0]).toMatchObject({
+					customType: "mail",
+					content: expect.stringContaining("Open only once"),
+				});
+			});
+		});
+
+		it("removes queued held delivery ids when a queued info message is later cancelled", async () => {
+			await withTempDir(async (tempDir) => {
+				const { created } = await createRoomWithWorkers(tempDir, "owner-session-held-cancel");
+				await createReplayableClaimedMember(created, {
+					memberName: "held_worker",
+					activation: "manual",
+					requestId: "req-held-cancel",
+					taskId: "spawn-held-cancel",
+					holdExpiresAt: "2026-05-26T00:01:00.000Z",
+				});
+				const memberContext = setMemberActiveRoomContext(
+					created,
+					"held_worker-session",
+					"held_worker",
+				);
+				const pi = {
+					sendMessage: vi.fn(),
+				} as unknown as ExtensionAPI;
+
+				const heldInfo = await appendMessage(created.roomDir, {
+					from: "owner",
+					to: "held_worker",
+					broadcast: false,
+					replyTo: null,
+					kind: "info",
+					summary: "Held context to cancel",
+				});
+				await processUnreadMessages(pi, memberContext);
+
+				const cancelled = await appendMessage(created.roomDir, {
+					from: "system",
+					to: "held_worker",
+					broadcast: false,
+					replyTo: heldInfo.id,
+					kind: "cancelled",
+					summary: "Cancelling held context",
+				});
+				await processUnreadMessages(pi, memberContext);
+
+				await expect(loadRoomMemberState(created.roomDir, "held_worker")).resolves.toMatchObject({
+					queuedDeliveryMessageIds: null,
+					lastSeenSeq: cancelled.seq,
+				});
+			});
+		});
+
+		it("applies a same-poll cancellation after releasing a previously queued task", async () => {
+			await withTempDir(async (tempDir) => {
+				vi.stubEnv("PI_ROOM_DELIVERY_DEBOUNCE_MS", "1");
+				const { created } = await createRoomWithWorkers(tempDir, "owner-session-held-release-cancel");
+				const { member, job } = await createReplayableClaimedMember(created, {
+					memberName: "held_worker",
+					activation: "manual",
+					requestId: "req-held-release-cancel",
+					taskId: "spawn-held-release-cancel",
+					holdExpiresAt: "2026-05-26T00:01:00.000Z",
+				});
+				const memberContext = setMemberActiveRoomContext(
+					created,
+					"held_worker-session",
+					"held_worker",
+				);
+				const pi = {
+					sendMessage: vi.fn(),
+				} as unknown as ExtensionAPI;
+
+				const queuedTask = await appendMessage(created.roomDir, {
+					from: "owner",
+					to: "held_worker",
+					broadcast: false,
+					replyTo: null,
+					kind: "task",
+					summary: "Release then cancel",
+				});
+				await persistCrewAddReplayEvent({
+					roomDir: created.roomDir,
+					requestId: "req-held-release-cancel",
+					event: buildCrewLifecycleEvent({
+						event: "enabled",
+						phase: "delivery",
+						request_id: "req-held-release-cancel",
+						command_id: null,
+						requested_name: "held_worker",
+						member_target: "held_worker",
+						member_type: "worker",
+						room_id: created.metadata.roomId,
+						spawn_task_id: job.taskId,
+						runtime_id: member.runtimeId,
+						activation: "manual",
+						metadata: { source: "state-derivation" },
+						delivery_state: "enabled",
+						hold_expires_at: null,
+						error: null,
+						reason: null,
+					}),
+					member,
+					job,
+				});
+				const cancelled = await appendMessage(created.roomDir, {
+					from: "system",
+					to: "held_worker",
+					broadcast: false,
+					replyTo: queuedTask.id,
+					kind: "cancelled",
+					summary: "Cancelled immediately after release",
+				});
+
+				await processUnreadMessages(pi, memberContext);
+				await waitFor(() => pi.sendMessage.mock.calls.length > 0);
+
+				await expect(loadRoomMemberState(created.roomDir, "held_worker")).resolves.toMatchObject({
+					state: "idle",
+					currentTask: null,
+					currentTaskMessageId: null,
+					queuedDeliveryMessageIds: null,
+					lastSeenSeq: cancelled.seq,
+				});
+			});
+		});
+	});

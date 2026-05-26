@@ -1,5 +1,9 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { RoomMemberState, RoomMessage } from "./types.ts";
+import type {
+	CrewAddReplayDeliveryGate,
+	RoomMemberState,
+	RoomMessage,
+} from "./types.ts";
 import { createRoomLogger } from "./logger.ts";
 import { extractInputDeps } from "./deps.ts";
 
@@ -145,9 +149,45 @@ export function deliverRoomMessagesBatch(
 	);
 }
 
-export function shouldDeliverMessage(message: RoomMessage, memberName: string): boolean {
+function isHeldDeliveryBypassMessage(message: RoomMessage): boolean {
+	if (message.kind === "cancelled") {
+		return true;
+	}
+	if (message.from !== "system" || message.kind !== "info") {
+		return false;
+	}
+	return /^All dependencies ready for task #\d+$/.test(message.summary)
+		|| /^Dependency failed/.test(message.summary)
+		|| /^Dependency cancelled/.test(message.summary);
+}
+
+export function shouldQueueCallerDirectedMessage(
+	message: RoomMessage,
+	memberName: string,
+	deliveryGate?: CrewAddReplayDeliveryGate | null,
+): boolean {
+	if (deliveryGate?.state !== "held") {
+		return false;
+	}
+	if (message.kind !== "task" && message.kind !== "info" && message.kind !== "question") {
+		return false;
+	}
+	if (!isMessageTargetedToMember(message, memberName) || message.from === memberName) {
+		return false;
+	}
+	return !isHeldDeliveryBypassMessage(message);
+}
+
+export function shouldDeliverMessage(
+	message: RoomMessage,
+	memberName: string,
+	deliveryGate?: CrewAddReplayDeliveryGate | null,
+): boolean {
 	if (message.kind === "progress") return false;
 	if (message.silent === true) return false;
+	if (shouldQueueCallerDirectedMessage(message, memberName, deliveryGate)) {
+		return false;
+	}
 	if (isMessageTargetedToMember(message, memberName) && message.from !== memberName) return true;
 	// System broadcasts (spawn/stop notifications) are informational and should
 	// only reach the owner (handled via processUnreadMessages owner path).
@@ -163,8 +203,15 @@ export function shouldDeliverMessage(message: RoomMessage, memberName: string): 
 	return message.to === "room" && message.broadcast && message.from !== memberName;
 }
 
-export function applyIncomingMessageState(member: RoomMemberState, message: RoomMessage): RoomMemberState {
+export function applyIncomingMessageState(
+	member: RoomMemberState,
+	message: RoomMessage,
+	deliveryGate?: CrewAddReplayDeliveryGate | null,
+): RoomMemberState {
 	if (!isMessageTargetedToMember(message, member.name)) return member;
+	if (shouldQueueCallerDirectedMessage(message, member.name, deliveryGate)) {
+		return member;
+	}
 
 	if (message.kind === "task") {
 		const deps = extractInputDeps(message.content);
