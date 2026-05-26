@@ -182,6 +182,30 @@ export const CrewBatchSchema = {
 			required: ["template", "params"],
 			additionalProperties: false,
 		},
+		{
+			type: "object",
+			properties: {
+				template: {
+					const: "review-fix-loop",
+					type: "string",
+					description: CREW_BATCH_TEMPLATE_PARAMETER_DESCRIPTION,
+				},
+				params: {
+					type: "object",
+					description: "Template-specific parameters.",
+					properties: {
+						reviewer: CrewBatchParticipantSchema,
+						fixer: CrewBatchParticipantSchema,
+						initialReviewTask: { type: "string" },
+						maxRounds: { type: "number" },
+					},
+					required: ["reviewer", "fixer", "initialReviewTask"],
+					additionalProperties: false,
+				},
+			},
+			required: ["template", "params"],
+			additionalProperties: false,
+		},
 	],
 };
 

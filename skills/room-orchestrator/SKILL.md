@@ -35,6 +35,7 @@ Manage multi-agent workflows through a persistent room. You (the owner) spawn su
 | `parallel-work-aggregate` | Multiple independent subtasks run in parallel, results aggregated |
 | `plan-review-loop` | Produce a plan, iterate with reviewers until approved |
 | `implement-review-loop` | Write code, have reviewers check it, iterate until approved |
+| `review-fix-loop` | Reviewer examines existing artifact first, then fixer resolves issues iteratively until approved |
 
 **Usage:**
 
@@ -55,6 +56,16 @@ crew_batch {
     author: { name: "coder", type: "worker" },
     reviewers: [{ name: "rv", type: "code-quality-reviewer" }],
     initialAuthorTask: "Implement a parse_date function in src/utils.py that can handle multiple date formats and timezones.",
+    maxRounds: 3
+  }
+}
+
+crew_batch {
+  template: "review-fix-loop",
+  params: {
+    reviewer: { name: "rv", type: "code-quality-reviewer" },
+    fixer: { name: "dev", type: "worker" },
+    initialReviewTask: "Review the architecture design in docs/design.md for correctness, completeness, and consistency.",
     maxRounds: 3
   }
 }
