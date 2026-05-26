@@ -101,6 +101,11 @@ export interface RoomSpawnJob {
 	backend: RoomBackend;
 	runtimeId?: string | null;
 	bootstrapToken?: string | null;
+	deliveryActivation?: CrewAddActivation | null;
+	deliveryState?: CrewReplayDeliveryState | null;
+	holdExpiresAt?: string | null;
+	lifecycleEvent?: Extract<CrewReplayLifecycleEventName, "terminated" | "aborted"> | null;
+	lifecycleReason?: string | null;
 	state: RoomSpawnJobState;
 	createdAt: string;
 	updatedAt: string;

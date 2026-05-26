@@ -18,6 +18,7 @@ import {
 	getRoomMutationLockPath,
 	getRoomHeartbeatPath,
 	getRoomMemberStatePath,
+	getRoomSpawnJobPath,
 	listBoardEntries,
 	loadRoomMetadata,
 	loadRoomMemberState,
@@ -1901,6 +1902,84 @@ describe("held generation expiry", () => {
 			state: "removed",
 			sessionId: null,
 			runtimeId: null,
+		});
+	});
+
+	it("reconcileMemberLiveness aborts expired held generations without request ids", async () => {
+		const result = await createTestRoom();
+		const roomDir = result.roomDir;
+		const metadata = await loadRoomMetadata(roomDir);
+		await createSpawningMember(roomDir, {
+			name: "held-expiry-requestless-worker",
+			displayName: "held-expiry-requestless-worker",
+			type: "worker",
+			backend: "pi",
+			taskId: "spawn-held-expiry-requestless",
+			bootstrapToken: "bootstrap-held-expiry-requestless",
+		} as never);
+		await markMemberJoined({
+			bootstrap: {
+				version: 1,
+				roomId: metadata.roomId,
+				roomDir,
+				memberName: "held-expiry-requestless-worker",
+				memberType: "worker",
+				ownerName: "owner",
+				ownerSessionId: metadata.ownerSessionId,
+				token: "bootstrap-held-expiry-requestless",
+				spawnTaskId: "spawn-held-expiry-requestless",
+			},
+			sessionId: "held-expiry-requestless-worker-session",
+			runtimeId: String(process.pid),
+			backend: "pi",
+		});
+		const job = await readSpawnJob(roomDir, "spawn-held-expiry-requestless");
+		expect(job).toBeTruthy();
+		const expiredAt = new Date(Date.now() - 5_000).toISOString();
+		await writeJsonAtomic(getRoomSpawnJobPath(roomDir, "spawn-held-expiry-requestless"), {
+			...job,
+			deliveryActivation: "manual",
+			deliveryState: "held",
+			holdExpiresAt: expiredAt,
+			updatedAt: new Date().toISOString(),
+		});
+
+		const emit = vi.fn(async () => undefined);
+		setCrewEventEmitter(emit);
+		try {
+			await reconcileMemberLiveness(roomDir, { pi: createPiAdapter(), paseo: adapters.paseo }, {
+				memberHeartbeatStaleMs: 5_000,
+			});
+		} finally {
+			setCrewEventEmitter(null);
+		}
+
+		const payloads = emit.mock.calls.map(([payload]) => payload as Record<string, unknown>);
+		expect(payloads).toContainEqual(
+			expect.objectContaining({
+				event: "aborted",
+				phase: "activation",
+				request_id: null,
+				spawn_task_id: "spawn-held-expiry-requestless",
+				reason: "hold_expired",
+				delivery_state: "ended",
+			}),
+		);
+		expect(
+			payloads.filter(
+				(payload) => payload.event === "terminated" && payload.spawn_task_id === "spawn-held-expiry-requestless",
+			),
+		).toHaveLength(0);
+		await expect(loadRoomMemberState(roomDir, "held-expiry-requestless-worker")).resolves.toMatchObject({
+			state: "removed",
+			sessionId: null,
+			runtimeId: null,
+		});
+		await expect(readSpawnJob(roomDir, "spawn-held-expiry-requestless")).resolves.toMatchObject({
+			deliveryState: "ended",
+			lifecycleEvent: "aborted",
+			lifecycleReason: "hold_expired",
+			holdExpiresAt: null,
 		});
 	});
 });

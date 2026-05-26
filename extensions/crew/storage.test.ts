@@ -1775,6 +1775,77 @@ describe("Member identity helpers", () => {
 			});
 		});
 
+		it("emits terminated for request-less generations by spawn task id", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-requestless-terminated",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				const emitCrewTerminatedOutcome = (storage as {
+					emitCrewTerminatedOutcome?: (options: {
+						roomDir: string;
+						requestId?: string;
+						spawnTaskId?: string;
+						memberName?: string;
+						reason: string;
+					}) => Promise<any>;
+				}).emitCrewTerminatedOutcome;
+				expect(emitCrewTerminatedOutcome).toBeTypeOf("function");
+
+				await createSpawningMember(created.roomDir, {
+					name: "requestless-worker",
+					displayName: "requestless-worker",
+					type: "worker",
+					backend: "pi",
+					taskId: "spawn-requestless-terminal",
+					bootstrapToken: "requestless-terminal-bootstrap-token",
+				} as never);
+				await markMemberJoined({
+					bootstrap: {
+						version: 1,
+						roomId: created.metadata.roomId,
+						roomDir: created.roomDir,
+						memberName: "requestless-worker",
+						memberType: "worker",
+						ownerName: "owner",
+						ownerSessionId: created.metadata.ownerSessionId,
+						token: "requestless-terminal-bootstrap-token",
+						spawnTaskId: "spawn-requestless-terminal",
+					},
+					sessionId: "requestless-worker-session",
+					runtimeId: String(process.pid),
+					backend: "pi",
+				});
+				await updateRoomMemberState(created.roomDir, "requestless-worker", {
+					state: "removed",
+					runtimeId: null,
+					sessionId: null,
+					spawnTaskId: null,
+					updatedAt: new Date().toISOString(),
+				});
+
+				const terminated = await emitCrewTerminatedOutcome?.({
+					roomDir: created.roomDir,
+					spawnTaskId: "spawn-requestless-terminal",
+					memberName: "requestless-worker",
+					reason: "removed",
+				});
+				expect(terminated).toMatchObject({
+					event: "terminated",
+					phase: "delivery",
+					request_id: null,
+					member_target: "requestless-worker",
+					spawn_task_id: "spawn-requestless-terminal",
+					reason: "removed",
+					delivery_state: "ended",
+				});
+			});
+		});
+
 		it("dedupes repeated terminal reconciliation for the same generation", async () => {
 			await withTempDir(async (tempDir) => {
 				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
@@ -2011,6 +2082,172 @@ describe("Member identity helpers", () => {
 					command_id: "abort-after-expiry",
 					reason: "hold_expired",
 					spawn_task_id: "spawn-request-expired-hold",
+				});
+			});
+		});
+
+		it("releases request-less held generations by spawn_task_id", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-requestless-release",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				const applyCrewControlCommand = (storage as {
+					applyCrewControlCommand?: (options: {
+						roomDir: string;
+						verb: "release" | "abort";
+						spawnTaskId: string;
+						commandId?: string;
+						requestId?: string;
+						reason?: string;
+					}) => Promise<any>;
+				}).applyCrewControlCommand;
+				expect(applyCrewControlCommand).toBeTypeOf("function");
+
+				await createSpawningMember(created.roomDir, {
+					name: "requestless-held-release-worker",
+					displayName: "requestless-held-release-worker",
+					type: "worker",
+					backend: "pi",
+					taskId: "spawn-requestless-release",
+					bootstrapToken: "bootstrap-requestless-release",
+					activation: "manual",
+					holdExpiresAt: new Date(Date.now() + 45_000).toISOString(),
+				} as never);
+				await markMemberJoined({
+					bootstrap: {
+						version: 1,
+						roomId: created.metadata.roomId,
+						roomDir: created.roomDir,
+						memberName: "requestless-held-release-worker",
+						memberType: "worker",
+						ownerName: "owner",
+						ownerSessionId: created.metadata.ownerSessionId,
+						token: "bootstrap-requestless-release",
+						spawnTaskId: "spawn-requestless-release",
+					},
+					sessionId: "requestless-held-release-session",
+					runtimeId: "requestless-held-release-runtime",
+					backend: "pi",
+				});
+
+				const first = await applyCrewControlCommand?.({
+					roomDir: created.roomDir,
+					verb: "release",
+					spawnTaskId: "spawn-requestless-release",
+					commandId: "requestless-release-command",
+				});
+				const replayed = await applyCrewControlCommand?.({
+					roomDir: created.roomDir,
+					verb: "release",
+					spawnTaskId: "spawn-requestless-release",
+					commandId: "requestless-release-command",
+				});
+
+				expect(first).toMatchObject({
+					event: "activated",
+					phase: "activation",
+					request_id: null,
+					command_id: "requestless-release-command",
+					spawn_task_id: "spawn-requestless-release",
+					delivery_state: "enabled",
+				});
+				expect(replayed).toEqual(first);
+				await expect(readSpawnJob(created.roomDir, "spawn-requestless-release")).resolves.toMatchObject({
+					deliveryActivation: "manual",
+					deliveryState: "enabled",
+					holdExpiresAt: null,
+				});
+			});
+		});
+
+		it("aborts request-less held generations and replays identical command_ids", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-requestless-abort",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				const applyCrewControlCommand = (storage as {
+					applyCrewControlCommand?: (options: {
+						roomDir: string;
+						verb: "release" | "abort";
+						spawnTaskId: string;
+						commandId?: string;
+						requestId?: string;
+						reason?: string;
+					}) => Promise<any>;
+				}).applyCrewControlCommand;
+				expect(applyCrewControlCommand).toBeTypeOf("function");
+
+				await createSpawningMember(created.roomDir, {
+					name: "requestless-held-abort-worker",
+					displayName: "requestless-held-abort-worker",
+					type: "worker",
+					backend: "pi",
+					taskId: "spawn-requestless-abort",
+					bootstrapToken: "bootstrap-requestless-abort",
+					activation: "manual",
+					holdExpiresAt: new Date(Date.now() + 45_000).toISOString(),
+				} as never);
+				await markMemberJoined({
+					bootstrap: {
+						version: 1,
+						roomId: created.metadata.roomId,
+						roomDir: created.roomDir,
+						memberName: "requestless-held-abort-worker",
+						memberType: "worker",
+						ownerName: "owner",
+						ownerSessionId: created.metadata.ownerSessionId,
+						token: "bootstrap-requestless-abort",
+						spawnTaskId: "spawn-requestless-abort",
+					},
+					sessionId: "requestless-held-abort-session",
+					runtimeId: "requestless-held-abort-runtime",
+					backend: "pi",
+				});
+
+				const first = await applyCrewControlCommand?.({
+					roomDir: created.roomDir,
+					verb: "abort",
+					spawnTaskId: "spawn-requestless-abort",
+					commandId: "requestless-abort-command",
+					reason: "caller_abort",
+				});
+				const replayed = await applyCrewControlCommand?.({
+					roomDir: created.roomDir,
+					verb: "abort",
+					spawnTaskId: "spawn-requestless-abort",
+					commandId: "requestless-abort-command",
+				});
+
+				expect(first).toMatchObject({
+					event: "aborted",
+					phase: "activation",
+					request_id: null,
+					command_id: "requestless-abort-command",
+					spawn_task_id: "spawn-requestless-abort",
+					reason: "caller_abort",
+					delivery_state: "ended",
+				});
+				expect(replayed).toEqual(first);
+				await expect(loadRoomMemberState(created.roomDir, "requestless-held-abort-worker")).resolves.toMatchObject({
+					state: "removed",
+					sessionId: null,
+					runtimeId: null,
+				});
+				await expect(readSpawnJob(created.roomDir, "spawn-requestless-abort")).resolves.toMatchObject({
+					deliveryActivation: "manual",
+					deliveryState: "ended",
+					lifecycleEvent: "aborted",
+					lifecycleReason: "caller_abort",
 				});
 			});
 		});

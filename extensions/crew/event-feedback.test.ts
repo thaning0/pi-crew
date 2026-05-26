@@ -1275,7 +1275,7 @@ describe("crew:add request feedback", () => {
 		});
 	});
 
-	it("re-emits the persisted terminated outcome when member session shutdown sees an ended generation", async () => {
+	it("does not re-emit a persisted terminated outcome during member session shutdown", async () => {
 		await withTempDir(async (tempDir) => {
 			const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
 			const created = await createRoom({
@@ -1357,12 +1357,7 @@ describe("crew:add request feedback", () => {
 					payload.event === "terminated"
 					&& payload.spawn_task_id === "spawn-terminal-replay",
 			);
-			expect(terminalCalls).toHaveLength(1);
-			expect(terminalCalls[0]).toMatchObject({
-				event: "terminated",
-				reason: "removed",
-				request_id: "req-terminal-replay",
-			});
+			expect(terminalCalls).toHaveLength(0);
 		});
 	});
 	});

@@ -846,19 +846,6 @@ export default function roomExtension(
 				}).catch((err) =>
 					log.error("shutdown terminal emit failed", { error: String(err) }),
 				) ?? null;
-				if (!terminalOutcome && currentMember.requestId) {
-					const persistedReplay = await readCrewAddRequestReplay(
-						activeRoom.roomDir,
-						currentMember.requestId,
-					).catch(() => null);
-					if (persistedReplay?.replay?.event === "terminated") {
-						await emitCrewLifecycleEvent(persistedReplay.replay).catch((err) =>
-							log.error("shutdown terminal replay emit failed", {
-								error: String(err),
-							}),
-						);
-					}
-				}
 			}
 		}
 		// Shut down mutation proxy if running (before reaping room, so logger still works)

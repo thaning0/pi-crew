@@ -817,6 +817,8 @@ export async function queueCrewAdd(
 			spawnBatchId: batchContext?.id ?? null,
 			transient: transient ? true : null,
 			bootstrapToken,
+			activation,
+			holdExpiresAt,
 			requestReplay: params.request_id
 				? {
 					request_id: params.request_id,
