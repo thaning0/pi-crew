@@ -1,0 +1,15 @@
+node_modules/
+package-lock.json
+.vscode/
+
+# Personal prompts & local package.json
+prompts.local
+package.json
+
+# Release directory (separate repo)
+release/
+
+# Package tarballs
+*.tgz
+
+docs
