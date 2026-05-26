@@ -5,7 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildCrewLifecycleEvent } from "./integration-events.ts";
 import { setActiveRoom, resetActiveRoomsForTests } from "./lifecycle.ts";
 import { activateBootstrapRoom } from "./lifecycle.ts";
-import { createRoom, createSpawningMember, persistCrewAddReplayEvent } from "./storage.ts";
+import {
+	createRoom,
+	createSpawningMember,
+	markMemberJoined,
+	persistCrewAddReplayEvent,
+} from "./storage.ts";
 
 const { queueCrewAddMock } = vi.hoisted(() => ({
 	queueCrewAddMock: vi.fn(),
@@ -55,13 +60,18 @@ function createHarness() {
 	};
 }
 
-function setOwnerRoom(sessionId = "owner-session"): void {
+function setOwnerRoom(options: {
+	sessionId?: string;
+	roomDir?: string;
+	roomId?: string;
+	memberName?: string;
+} = {}): void {
 	setActiveRoom({
 		role: "owner",
-		roomDir: "/home/thn/pi-crew/extensions/crew",
-		roomId: "room-1",
-		memberName: "lead",
-		sessionId,
+		roomDir: options.roomDir ?? "/home/thn/pi-crew/extensions/crew",
+		roomId: options.roomId ?? "room-1",
+		memberName: options.memberName ?? "lead",
+		sessionId: options.sessionId ?? "owner-session",
 		pollTimer: null,
 		heartbeatTimer: null,
 		pendingPoll: null,
@@ -98,8 +108,46 @@ async function cacheProjectCwd(
 	);
 }
 
-async function flushAsyncWork(): Promise<void> {
-	await new Promise((resolve) => setTimeout(resolve, 0));
+async function flushAsyncWork(delay = 0): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, delay));
+}
+
+async function seedHeldManualGeneration(roomDir: string, ownerSessionId: string, roomId: string) {
+	await createSpawningMember(roomDir, {
+		name: "held-worker",
+		displayName: "held-worker",
+		type: "worker",
+		backend: "pi",
+		taskId: "spawn-held-manual",
+		bootstrapToken: "bootstrap-held-manual",
+		requestReplay: {
+			requestId: "req-held-manual",
+			requestedName: "held-worker",
+			type: "worker",
+			model: null,
+			task: null,
+			transient: false,
+			metadata: { source: "event-feedback-control" },
+			activation: "manual",
+			holdTimeoutMs: 30_000,
+		},
+	} as never);
+	await markMemberJoined({
+		bootstrap: {
+			version: 1,
+			roomId,
+			roomDir,
+			memberName: "held-worker",
+			memberType: "worker",
+			ownerName: "owner",
+			ownerSessionId,
+			token: "bootstrap-held-manual",
+			spawnTaskId: "spawn-held-manual",
+		},
+		sessionId: "held-worker-session",
+		runtimeId: "held-worker-runtime",
+		backend: "pi",
+	});
 }
 
 function crewEventPayloads(emit: ReturnType<typeof vi.fn>): Array<Record<string, unknown>> {
@@ -127,7 +175,7 @@ describe("crew:add request feedback", () => {
 			request_id: "req-invalid-shape",
 			type: "builder",
 		});
-		await flushAsyncWork();
+		await flushAsyncWork(25);
 
 		expect(queueCrewAddMock).not.toHaveBeenCalled();
 		const [payload] = crewEventPayloads(harness.emit);
@@ -150,7 +198,7 @@ describe("crew:add request feedback", () => {
 			name: "worker",
 			type: "builder",
 		});
-		await flushAsyncWork();
+		await flushAsyncWork(25);
 
 		expect(queueCrewAddMock).not.toHaveBeenCalled();
 		expect(crewEventPayloads(harness.emit)).toContainEqual(
@@ -174,7 +222,7 @@ describe("crew:add request feedback", () => {
 			type: "builder",
 			activation: "later",
 		});
-		await flushAsyncWork();
+		await flushAsyncWork(25);
 
 		const [payload] = crewEventPayloads(harness.emit);
 		expect(queueCrewAddMock).not.toHaveBeenCalled();
@@ -199,7 +247,7 @@ describe("crew:add request feedback", () => {
 			type: "builder",
 			metadata: "not-an-object",
 		});
-		await flushAsyncWork();
+		await flushAsyncWork(25);
 
 		expect(queueCrewAddMock).not.toHaveBeenCalled();
 		expect(crewEventPayloads(harness.emit)).toContainEqual(
@@ -222,7 +270,7 @@ describe("crew:add request feedback", () => {
 			name: "worker",
 			type: "builder",
 		});
-		await flushAsyncWork();
+		await flushAsyncWork(25);
 
 		expect(queueCrewAddMock).not.toHaveBeenCalled();
 		expect(crewEventPayloads(harness.emit)).toContainEqual(
@@ -244,7 +292,7 @@ describe("crew:add request feedback", () => {
 			name: "worker",
 			type: "builder",
 		});
-		await flushAsyncWork();
+		await flushAsyncWork(25);
 
 		expect(queueCrewAddMock).not.toHaveBeenCalled();
 		expect(crewEventPayloads(harness.emit)).toContainEqual(
@@ -283,7 +331,7 @@ describe("crew:add request feedback", () => {
 			hold_timeout_ms: 15_000,
 			metadata,
 		});
-		await flushAsyncWork();
+		await flushAsyncWork(25);
 
 		expect(queueCrewAddMock).toHaveBeenCalledTimes(1);
 		const [params] = queueCrewAddMock.mock.calls[0] ?? [];
@@ -315,7 +363,7 @@ describe("crew:add request feedback", () => {
 			name: "worker",
 			type: "builder",
 		});
-		await flushAsyncWork();
+		await flushAsyncWork(25);
 
 		const [payload] = crewEventPayloads(harness.emit);
 		expect(queueCrewAddMock).toHaveBeenCalledTimes(1);
@@ -346,7 +394,7 @@ describe("crew:add request feedback", () => {
 			task: "do the work",
 			transient: true,
 		});
-		await flushAsyncWork();
+		await flushAsyncWork(25);
 
 		expect(queueCrewAddMock).toHaveBeenCalledTimes(1);
 		expect(crewEventPayloads(harness.emit)).toEqual([]);
@@ -386,7 +434,7 @@ describe("crew:add request feedback", () => {
 			name: "worker",
 			type: "builder",
 		});
-		await flushAsyncWork();
+		await flushAsyncWork(25);
 
 		expect(queueCrewAddMock).toHaveBeenCalledTimes(1);
 		expect(crewEventPayloads(harness.emit)).toContainEqual(
@@ -440,7 +488,7 @@ describe("crew:add request feedback", () => {
 			activation: "manual",
 			hold_timeout_ms: 30_000,
 		});
-		await flushAsyncWork();
+		await flushAsyncWork(25);
 
 		expect(queueCrewAddMock).toHaveBeenCalledTimes(1);
 		expect(crewEventPayloads(harness.emit)).toContainEqual(
@@ -473,7 +521,7 @@ describe("crew:add request feedback", () => {
 			type: "builder",
 			task: "original task",
 		});
-		await flushAsyncWork();
+		await flushAsyncWork(25);
 
 		expect(queueCrewAddMock).toHaveBeenCalledTimes(1);
 		expect(crewEventPayloads(harness.emit)).toContainEqual(
@@ -585,4 +633,199 @@ describe("crew:add request feedback", () => {
 			});
 		});
 	});
-});
+
+	it("emits activated when crew:release targets a held manual generation", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-release",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				await seedHeldManualGeneration(
+					created.roomDir,
+					created.metadata.ownerSessionId,
+					created.metadata.roomId,
+				);
+
+				const harness = createHarness();
+				setOwnerRoom({
+					sessionId: created.metadata.ownerSessionId,
+					roomDir: created.roomDir,
+					roomId: created.metadata.roomId,
+					memberName: "owner",
+				});
+
+				const releaseHandler = harness.eventHandlers.get("crew:release");
+				expect(releaseHandler).toBeTypeOf("function");
+				releaseHandler?.({
+					spawn_task_id: "spawn-held-manual",
+					command_id: "release-command-1",
+					request_id: "req-held-manual",
+				});
+				await flushAsyncWork(25);
+
+				expect(crewEventPayloads(harness.emit)).toContainEqual(
+					expect.objectContaining({
+						event: "activated",
+						phase: "activation",
+						request_id: "req-held-manual",
+						command_id: "release-command-1",
+						spawn_task_id: "spawn-held-manual",
+					}),
+				);
+			});
+		});
+
+	it("emits aborted when crew:abort targets a held manual generation", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-abort",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				await seedHeldManualGeneration(
+					created.roomDir,
+					created.metadata.ownerSessionId,
+					created.metadata.roomId,
+				);
+
+				const harness = createHarness();
+				setOwnerRoom({
+					sessionId: created.metadata.ownerSessionId,
+					roomDir: created.roomDir,
+					roomId: created.metadata.roomId,
+					memberName: "owner",
+				});
+
+				const abortHandler = harness.eventHandlers.get("crew:abort");
+				expect(abortHandler).toBeTypeOf("function");
+				abortHandler?.({
+					spawn_task_id: "spawn-held-manual",
+					command_id: "abort-command-1",
+					request_id: "req-held-manual",
+				});
+				await flushAsyncWork(25);
+
+				expect(crewEventPayloads(harness.emit)).toContainEqual(
+					expect.objectContaining({
+						event: "aborted",
+						phase: "activation",
+						reason: "caller_abort",
+						request_id: "req-held-manual",
+						command_id: "abort-command-1",
+						spawn_task_id: "spawn-held-manual",
+					}),
+				);
+			});
+		});
+
+	it("replays the prior activated outcome for an identical release command_id", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-release-replay",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				await seedHeldManualGeneration(
+					created.roomDir,
+					created.metadata.ownerSessionId,
+					created.metadata.roomId,
+				);
+
+				const harness = createHarness();
+				setOwnerRoom({
+					sessionId: created.metadata.ownerSessionId,
+					roomDir: created.roomDir,
+					roomId: created.metadata.roomId,
+					memberName: "owner",
+				});
+
+				const releaseHandler = harness.eventHandlers.get("crew:release");
+				expect(releaseHandler).toBeTypeOf("function");
+				releaseHandler?.({
+					spawn_task_id: "spawn-held-manual",
+					command_id: "release-command-replay",
+					request_id: "req-held-manual",
+				});
+				await flushAsyncWork(25);
+				releaseHandler?.({
+					spawn_task_id: "spawn-held-manual",
+					command_id: "release-command-replay",
+					request_id: "req-held-manual",
+				});
+				await flushAsyncWork(25);
+
+				const activatedCalls = crewEventPayloads(harness.emit).filter(
+					(payload) => payload.event === "activated",
+				);
+				expect(activatedCalls).toHaveLength(2);
+				expect(activatedCalls[1]).toMatchObject({
+					event_id: activatedCalls[0]?.event_id,
+					command_id: "release-command-replay",
+					phase: "activation",
+				});
+			});
+		});
+
+	it("emits activation-phase failed when a command_id is reused for a conflicting control verb", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-control-conflict",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				await seedHeldManualGeneration(
+					created.roomDir,
+					created.metadata.ownerSessionId,
+					created.metadata.roomId,
+				);
+
+				const harness = createHarness();
+				setOwnerRoom({
+					sessionId: created.metadata.ownerSessionId,
+					roomDir: created.roomDir,
+					roomId: created.metadata.roomId,
+					memberName: "owner",
+				});
+
+				const releaseHandler = harness.eventHandlers.get("crew:release");
+				const abortHandler = harness.eventHandlers.get("crew:abort");
+				expect(releaseHandler).toBeTypeOf("function");
+				expect(abortHandler).toBeTypeOf("function");
+
+				releaseHandler?.({
+					spawn_task_id: "spawn-held-manual",
+					command_id: "conflicting-command-id",
+					request_id: "req-held-manual",
+				});
+				await flushAsyncWork(25);
+				abortHandler?.({
+					spawn_task_id: "spawn-held-manual",
+					command_id: "conflicting-command-id",
+					request_id: "req-held-manual",
+				});
+				await flushAsyncWork(25);
+
+				expect(crewEventPayloads(harness.emit)).toContainEqual(
+					expect.objectContaining({
+						event: "failed",
+						phase: "activation",
+						command_id: "conflicting-command-id",
+						spawn_task_id: "spawn-held-manual",
+					}),
+				);
+			});
+		});
+	});

@@ -2,9 +2,11 @@ import { createHash } from "node:crypto";
 import type { CrewAddActivation } from "./types.ts";
 
 export type CrewDeliveryState = "pending" | "held" | "enabled" | "ended";
-export type CrewLifecyclePhase = "request" | "spawn" | "delivery";
+export type CrewLifecyclePhase = "request" | "spawn" | "delivery" | "activation";
 export type CrewLifecycleEventName =
 	| CrewDeliveryState
+	| "activated"
+	| "aborted"
 	| "claimed"
 	| "rejected"
 	| "spawned"

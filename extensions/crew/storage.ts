@@ -16,7 +16,10 @@ import type {
 	CrewAddReplayLifecycleSnapshot,
 	CrewAddReplayRecord,
 	CrewAddReplaySeed,
+	CrewControlReplayRecord,
+	CrewControlVerb,
 	CrewReplayDeliveryState,
+	CrewReplayLifecycleEventName,
 	RoomBackend,
 	RoomBootstrap,
 	RoomMemberState,
@@ -684,6 +687,10 @@ export function getRoomRequestReplaysDir(roomDir: string): string {
 	return path.join(roomDir, "request-replays");
 }
 
+export function getRoomControlReplaysDir(roomDir: string): string {
+	return path.join(getRoomRequestReplaysDir(roomDir), "control");
+}
+
 export function getRoomHeartbeatsDir(roomDir: string): string {
 	return path.join(roomDir, "heartbeats");
 }
@@ -692,8 +699,32 @@ function encodeCrewAddRequestReplayKey(requestId: string): string {
 	return createHash("sha256").update(requestId, "utf8").digest("hex");
 }
 
+function encodeCrewControlReplayKey(
+	verb: CrewControlVerb,
+	spawnTaskId: string,
+	commandId: string,
+): string {
+	return createHash("sha256")
+		.update(`${verb}\0${spawnTaskId}\0${commandId}`, "utf8")
+		.digest("hex");
+}
+
 export function getCrewAddRequestReplayPath(roomDir: string, requestId: string): string {
 	return path.join(getRoomRequestReplaysDir(roomDir), `${encodeCrewAddRequestReplayKey(requestId)}.json`);
+}
+
+export function getCrewControlReplayPath(
+	roomDir: string,
+	options: {
+		verb: CrewControlVerb;
+		spawnTaskId: string;
+		commandId: string;
+	},
+): string {
+	return path.join(
+		getRoomControlReplaysDir(roomDir),
+		`${encodeCrewControlReplayKey(options.verb, options.spawnTaskId, options.commandId)}.json`,
+	);
 }
 
 export function getMemberHeartbeatPath(roomDir: string, memberName: string): string {
@@ -753,6 +784,7 @@ export async function ensureRoomLayout(roomDir: string): Promise<void> {
 	await fs.mkdir(getRoomMembersDir(roomDir), { recursive: true });
 	await fs.mkdir(getRoomJobsDir(roomDir), { recursive: true });
 	await fs.mkdir(getRoomRequestReplaysDir(roomDir), { recursive: true });
+	await fs.mkdir(getRoomControlReplaysDir(roomDir), { recursive: true });
 	await fs.mkdir(getRoomHeartbeatsDir(roomDir), { recursive: true });
 }
 
@@ -855,6 +887,7 @@ function normalizeReplayDeliveryGate(
 	fallback: {
 		activation: CrewAddActivation | null;
 		delivery_state: CrewReplayDeliveryState | null;
+		event: CrewReplayLifecycleEventName | null;
 		hold_expires_at: string | null;
 		updated_at: string;
 	},
@@ -888,6 +921,9 @@ function normalizeReplayDeliveryGate(
 	if (normalized.state === "ended" && !normalized.ended_at) {
 		normalized.ended_at = fallback.updated_at;
 	}
+	if (fallback.event === "aborted" && !normalized.aborted_at) {
+		normalized.aborted_at = fallback.updated_at;
+	}
 	if (normalized.state !== "held") {
 		normalized.hold_expires_at = null;
 	}
@@ -898,6 +934,7 @@ function transitionReplayDeliveryGate(options: {
 	previous?: CrewAddReplayDeliveryGate | null;
 	activation: CrewAddActivation | null;
 	state: CrewReplayDeliveryState | null;
+	event?: CrewReplayLifecycleEventName | null;
 	hold_expires_at?: string | null;
 	updated_at: string;
 }): CrewAddReplayDeliveryGate | null {
@@ -934,6 +971,9 @@ function transitionReplayDeliveryGate(options: {
 	if (state === "ended" && !next.ended_at) {
 		next.ended_at = options.updated_at;
 	}
+	if (options.event === "aborted" && !next.aborted_at) {
+		next.aborted_at = options.updated_at;
+	}
 	return next;
 }
 
@@ -943,6 +983,7 @@ function normalizeCrewAddReplaySnapshot(
 	const normalizedDelivery = normalizeReplayDeliveryGate(replay.delivery, {
 		activation: replay.activation,
 		delivery_state: replay.delivery_state,
+		event: replay.event,
 		hold_expires_at: replay.hold_expires_at,
 		updated_at: replay.updated_at,
 	});
@@ -1104,41 +1145,82 @@ function buildCrewAddReplayLifecycleSnapshot(options: {
 		)
 			? previous
 			: null;
+	const preservedActivationEvent =
+		previous
+		&& previous.phase === "activation"
+		&& (previous.event === "activated" || previous.event === "aborted")
+			? previous
+			: null;
 	const previousDelivery = normalizeReplayDeliveryGate(previous?.delivery, {
 		activation: previous?.activation ?? options.record.activation,
 		delivery_state: previous?.delivery_state ?? null,
+		event: previous?.event ?? null,
 		hold_expires_at: previous?.hold_expires_at ?? null,
 		updated_at: previous?.updated_at ?? updatedAt,
 	});
-	const effectiveEvent = preservedSpawnEvent ?? preservedClaimEvent ?? derivedEvent ?? previous ?? null;
+	const effectiveEvent =
+		preservedSpawnEvent
+		?? preservedClaimEvent
+		?? preservedActivationEvent
+		?? derivedEvent
+		?? previous
+		?? null;
 	const delivery = transitionReplayDeliveryGate({
 		previous: previousDelivery,
 		activation: effectiveEvent?.activation ?? options.record.activation,
 		state: effectiveEvent?.delivery_state ?? null,
+		event: effectiveEvent?.event ?? null,
 		hold_expires_at: effectiveEvent?.hold_expires_at ?? null,
 		updated_at: updatedAt,
 	});
 	return {
-		event_id: preservedSpawnEvent?.event_id ?? preservedClaimEvent?.event_id ?? derivedEvent?.event_id ?? previous?.event_id ?? null,
-		event: preservedSpawnEvent?.event ?? preservedClaimEvent?.event ?? derivedEvent?.event ?? previous?.event ?? null,
-		phase: preservedSpawnEvent?.phase ?? preservedClaimEvent?.phase ?? derivedEvent?.phase ?? previous?.phase ?? null,
+		event_id:
+			preservedSpawnEvent?.event_id
+			?? preservedClaimEvent?.event_id
+			?? preservedActivationEvent?.event_id
+			?? derivedEvent?.event_id
+			?? previous?.event_id
+			?? null,
+		event:
+			preservedSpawnEvent?.event
+			?? preservedClaimEvent?.event
+			?? preservedActivationEvent?.event
+			?? derivedEvent?.event
+			?? previous?.event
+			?? null,
+		phase:
+			preservedSpawnEvent?.phase
+			?? preservedClaimEvent?.phase
+			?? preservedActivationEvent?.phase
+			?? derivedEvent?.phase
+			?? previous?.phase
+			?? null,
 		request_id: options.record.request_id,
-		command_id: preservedSpawnEvent?.command_id ?? preservedClaimEvent?.command_id ?? derivedEvent?.command_id ?? previous?.command_id ?? null,
+		command_id:
+			preservedSpawnEvent?.command_id
+			?? preservedClaimEvent?.command_id
+			?? preservedActivationEvent?.command_id
+			?? derivedEvent?.command_id
+			?? previous?.command_id
+			?? null,
 		requested_name: options.record.material.requested_name,
 		member_target:
 			preservedSpawnEvent?.member_target
 			?? preservedClaimEvent?.member_target
+			?? preservedActivationEvent?.member_target
 			?? derivedEvent?.member_target
 			?? options.member?.name
 			?? options.record.member_name,
 		member_type:
 			preservedSpawnEvent?.member_type
 			?? preservedClaimEvent?.member_type
+			?? preservedActivationEvent?.member_type
 			?? derivedEvent?.member_type
 			?? options.record.material.type,
 		room_id:
 			preservedSpawnEvent?.room_id
 			?? preservedClaimEvent?.room_id
+			?? preservedActivationEvent?.room_id
 			?? derivedEvent?.room_id
 			?? previous?.room_id
 			?? null,
@@ -1146,6 +1228,7 @@ function buildCrewAddReplayLifecycleSnapshot(options: {
 		runtime_id:
 			preservedSpawnEvent?.runtime_id
 			?? preservedClaimEvent?.runtime_id
+			?? preservedActivationEvent?.runtime_id
 			?? derivedEvent?.runtime_id
 			?? options.member?.runtimeId
 			?? options.job?.runtimeId
@@ -1155,6 +1238,7 @@ function buildCrewAddReplayLifecycleSnapshot(options: {
 		metadata:
 			preservedSpawnEvent?.metadata
 			?? preservedClaimEvent?.metadata
+			?? preservedActivationEvent?.metadata
 			?? derivedEvent?.metadata
 			?? options.record.metadata
 			?? previous?.metadata
@@ -1165,6 +1249,7 @@ function buildCrewAddReplayLifecycleSnapshot(options: {
 		error:
 			preservedSpawnEvent?.error
 			?? preservedClaimEvent?.error
+			?? preservedActivationEvent?.error
 			?? derivedEvent?.error
 			?? options.job?.error
 			?? options.member?.lastError
@@ -1172,6 +1257,7 @@ function buildCrewAddReplayLifecycleSnapshot(options: {
 		reason:
 			preservedSpawnEvent?.reason
 			?? preservedClaimEvent?.reason
+			?? preservedActivationEvent?.reason
 			?? derivedEvent?.reason
 			?? previous?.reason
 			?? null,
@@ -1191,6 +1277,7 @@ function buildReplaySnapshotFromEvent(options: {
 	const previousDelivery = normalizeReplayDeliveryGate(options.record.replay?.delivery, {
 		activation: options.record.replay?.activation ?? options.record.activation,
 		delivery_state: options.record.replay?.delivery_state ?? null,
+		event: options.record.replay?.event ?? null,
 		hold_expires_at: options.record.replay?.hold_expires_at ?? null,
 		updated_at: options.record.replay?.updated_at ?? options.updatedAt,
 	});
@@ -1198,6 +1285,7 @@ function buildReplaySnapshotFromEvent(options: {
 		previous: previousDelivery,
 		activation: options.event.activation ?? options.record.activation,
 		state: options.event.delivery_state ?? null,
+		event: options.event.event,
 		hold_expires_at: options.event.hold_expires_at ?? null,
 		updated_at: options.updatedAt,
 	});
@@ -1274,7 +1362,7 @@ function buildCrewAddReplayRecord(options: {
 
 function isCrewAddReplayClearlyTerminal(record: CrewAddReplayRecord): boolean {
 	const replay = record.replay;
-	if (!replay || replay.event !== "ended") {
+	if (!replay || (replay.event !== "ended" && replay.event !== "aborted")) {
 		return false;
 	}
 	if (
@@ -1375,6 +1463,376 @@ export async function readCrewAddRequestReplay(roomDir: string, requestId: strin
 	}
 }
 
+async function listCrewAddRequestReplays(roomDir: string): Promise<CrewAddReplayRecord[]> {
+	let entries: string[] = [];
+	try {
+		entries = await fs.readdir(getRoomRequestReplaysDir(roomDir));
+	} catch {
+		return [];
+	}
+	const records = await Promise.all(
+		entries
+			.filter((entry) => entry.endsWith(".json"))
+			.sort((left, right) => left.localeCompare(right))
+			.map(async (entry) => {
+				try {
+					return normalizeCrewAddReplayRecord(
+						await readJsonFile<CrewAddReplayRecord>(
+							path.join(getRoomRequestReplaysDir(roomDir), entry),
+						),
+					);
+				} catch {
+					return null;
+				}
+			}),
+	);
+	return records.filter((record): record is CrewAddReplayRecord => record !== null);
+}
+
+async function writeCrewControlReplayFile(
+	roomDir: string,
+	record: CrewControlReplayRecord,
+): Promise<void> {
+	await fs.mkdir(getRoomControlReplaysDir(roomDir), { recursive: true });
+	await writeJsonAtomic(
+		getCrewControlReplayPath(roomDir, {
+			verb: record.verb,
+			spawnTaskId: record.spawn_task_id,
+			commandId: record.command_id,
+		}),
+		record,
+	);
+}
+
+export async function readCrewControlReplay(
+	roomDir: string,
+	options: {
+		verb: CrewControlVerb;
+		spawnTaskId: string;
+		commandId: string;
+	},
+): Promise<CrewControlReplayRecord | null> {
+	try {
+		return await readJsonFile<CrewControlReplayRecord>(
+			getCrewControlReplayPath(roomDir, options),
+		);
+	} catch {
+		return null;
+	}
+}
+
+async function listCrewControlReplays(roomDir: string): Promise<CrewControlReplayRecord[]> {
+	let entries: string[] = [];
+	try {
+		entries = await fs.readdir(getRoomControlReplaysDir(roomDir));
+	} catch {
+		return [];
+	}
+	const records = await Promise.all(
+		entries
+			.filter((entry) => entry.endsWith(".json"))
+			.sort((left, right) => left.localeCompare(right))
+			.map(async (entry) => {
+				try {
+					return await readJsonFile<CrewControlReplayRecord>(
+						path.join(getRoomControlReplaysDir(roomDir), entry),
+					);
+				} catch {
+					return null;
+				}
+			}),
+	);
+	return records.filter((record): record is CrewControlReplayRecord => record !== null);
+}
+
+async function findCrewAddReplayForControl(options: {
+	roomDir: string;
+	spawnTaskId: string;
+	requestId?: string;
+}): Promise<CrewAddReplayRecord | null> {
+	if (options.requestId) {
+		const direct = await readCrewAddRequestReplay(options.roomDir, options.requestId);
+		if (!direct) {
+			return null;
+		}
+		return direct.spawn_task_id === options.spawnTaskId ? direct : null;
+	}
+	const records = await listCrewAddRequestReplays(options.roomDir);
+	return records.find((record) => record.spawn_task_id === options.spawnTaskId) ?? null;
+}
+
+function buildCrewControlFailedEvent(options: {
+	record: CrewAddReplayRecord | null;
+	verb: CrewControlVerb;
+	spawnTaskId: string;
+	commandId?: string;
+	requestId?: string;
+	error: string;
+	reason: string;
+}): CrewAddReplayableEvent {
+	const record = options.record;
+	return buildCrewLifecycleEvent({
+		event: "failed",
+		phase: "activation",
+		request_id: record?.request_id ?? options.requestId ?? null,
+		command_id: options.commandId ?? null,
+		requested_name: record?.material.requested_name ?? null,
+		member_target: record?.replay?.member_target ?? record?.member_name ?? null,
+		member_type: record?.material.type ?? null,
+		room_id: record?.replay?.room_id ?? null,
+		spawn_task_id: options.spawnTaskId,
+		runtime_id: record?.replay?.runtime_id ?? null,
+		activation: record?.activation ?? null,
+		metadata: record?.metadata ?? null,
+		delivery_state: record?.replay?.delivery_state ?? null,
+		hold_expires_at: record?.replay?.hold_expires_at ?? null,
+		error: options.error,
+		reason: options.reason,
+	});
+}
+
+function buildCrewControlLifecycleEvent(options: {
+	record: CrewAddReplayRecord;
+	event: "activated" | "aborted";
+	commandId?: string;
+	reason?: string | null;
+	runtimeId?: string | null;
+	roomId?: string | null;
+}): CrewAddReplayableEvent {
+	return buildCrewLifecycleEvent({
+		event: options.event,
+		phase: "activation",
+		request_id: options.record.request_id,
+		command_id: options.commandId ?? null,
+		requested_name: options.record.material.requested_name,
+		member_target: options.record.replay?.member_target ?? options.record.member_name,
+		member_type: options.record.material.type,
+		room_id: options.roomId ?? options.record.replay?.room_id ?? null,
+		spawn_task_id: options.record.spawn_task_id,
+		runtime_id: options.runtimeId ?? options.record.replay?.runtime_id ?? null,
+		activation: options.record.activation,
+		metadata: options.record.metadata ?? null,
+		delivery_state: options.event === "activated" ? "enabled" : "ended",
+		hold_expires_at: null,
+		error: null,
+		reason: options.reason ?? null,
+	});
+}
+
+async function persistCrewControlReplayRecord(options: {
+	roomDir: string;
+	verb: CrewControlVerb;
+	spawnTaskId: string;
+	commandId?: string;
+	requestId?: string | null;
+	outcome: CrewAddReplayableEvent;
+	updatedAt: string;
+}): Promise<void> {
+	if (!options.commandId) {
+		return;
+	}
+	const existing = await readCrewControlReplay(options.roomDir, {
+		verb: options.verb,
+		spawnTaskId: options.spawnTaskId,
+		commandId: options.commandId,
+	});
+	await writeCrewControlReplayFile(options.roomDir, {
+		verb: options.verb,
+		spawn_task_id: options.spawnTaskId,
+		command_id: options.commandId,
+		request_id: options.requestId ?? null,
+		outcome: options.outcome,
+		created_at: existing?.created_at ?? options.updatedAt,
+		updated_at: options.updatedAt,
+	});
+}
+
+export async function applyCrewControlCommand(options: {
+	roomDir: string;
+	verb: CrewControlVerb;
+	spawnTaskId: string;
+	commandId?: string;
+	requestId?: string;
+	reason?: string;
+}): Promise<CrewAddReplayableEvent> {
+	return await withRoomMutationLock(options.roomDir, async () => {
+		const updatedAt = new Date().toISOString();
+		const record = await findCrewAddReplayForControl({
+			roomDir: options.roomDir,
+			spawnTaskId: options.spawnTaskId,
+			requestId: options.requestId,
+		});
+		if (!record) {
+			const failed = buildCrewControlFailedEvent({
+				record: null,
+				verb: options.verb,
+				spawnTaskId: options.spawnTaskId,
+				commandId: options.commandId,
+				requestId: options.requestId,
+				error: `spawn_task_id ${options.spawnTaskId} does not reference a replayable held generation.`,
+				reason: "unknown-generation",
+			});
+			await persistCrewControlReplayRecord({
+				roomDir: options.roomDir,
+				verb: options.verb,
+				spawnTaskId: options.spawnTaskId,
+				commandId: options.commandId,
+				requestId: options.requestId ?? null,
+				outcome: failed,
+				updatedAt,
+			});
+			return failed;
+		}
+		if (options.commandId) {
+			const replayed = await readCrewControlReplay(options.roomDir, {
+				verb: options.verb,
+				spawnTaskId: options.spawnTaskId,
+				commandId: options.commandId,
+			});
+			if (replayed) {
+				return replayed.outcome;
+			}
+			const conflict = (await listCrewControlReplays(options.roomDir)).find(
+				(existing) =>
+					existing.command_id === options.commandId
+					&& (existing.verb !== options.verb || existing.spawn_task_id !== options.spawnTaskId),
+			);
+			if (conflict) {
+				const failed = buildCrewControlFailedEvent({
+					record,
+					verb: options.verb,
+					spawnTaskId: options.spawnTaskId,
+					commandId: options.commandId,
+					requestId: options.requestId ?? record.request_id,
+					error: `command_id ${options.commandId} conflicts with ${conflict.verb} for spawn_task_id ${conflict.spawn_task_id}.`,
+					reason: "command-id-conflict",
+				});
+				await persistCrewControlReplayRecord({
+					roomDir: options.roomDir,
+					verb: options.verb,
+					spawnTaskId: options.spawnTaskId,
+					commandId: options.commandId,
+					requestId: record.request_id,
+					outcome: failed,
+					updatedAt,
+				});
+				return failed;
+			}
+		}
+		let member = await loadRoomMemberState(options.roomDir, record.member_name).catch(() => null);
+		let job = await readSpawnJob(options.roomDir, record.spawn_task_id).catch(() => null);
+		if (!member || !job) {
+			const repaired = await resolveCrewAddReplayAnchors(record, options.roomDir);
+			member = member ?? repaired.member;
+			job = job ?? repaired.job;
+		}
+		const deliveryGate = getCrewAddReplayDeliveryGate(record);
+		if (deliveryGate?.state !== "held") {
+			const failed = buildCrewControlFailedEvent({
+				record,
+				verb: options.verb,
+				spawnTaskId: options.spawnTaskId,
+				commandId: options.commandId,
+				requestId: options.requestId ?? record.request_id,
+				error: `crew:${options.verb} requires a held generation, found ${deliveryGate?.state ?? "none"}.`,
+				reason: "invalid-activation-state",
+			});
+			await persistCrewControlReplayRecord({
+				roomDir: options.roomDir,
+				verb: options.verb,
+				spawnTaskId: options.spawnTaskId,
+				commandId: options.commandId,
+				requestId: record.request_id,
+				outcome: failed,
+				updatedAt,
+			});
+			return failed;
+		}
+		if (options.verb === "release") {
+			const activated = buildCrewControlLifecycleEvent({
+				record,
+				event: "activated",
+				commandId: options.commandId,
+				runtimeId: member?.runtimeId ?? job?.runtimeId ?? record.replay?.runtime_id ?? null,
+				roomId: record.replay?.room_id ?? null,
+			});
+			await persistCrewAddReplayEventLocked({
+				roomDir: options.roomDir,
+				requestId: record.request_id,
+				event: activated,
+				member,
+				job,
+				updatedAt,
+			});
+			await persistCrewControlReplayRecord({
+				roomDir: options.roomDir,
+				verb: options.verb,
+				spawnTaskId: options.spawnTaskId,
+				commandId: options.commandId,
+				requestId: record.request_id,
+				outcome: activated,
+				updatedAt,
+			});
+			return activated;
+		}
+		const abortReason = options.reason?.trim() || "caller_abort";
+		const nextJob = job
+			? transitionSpawnJobLocked(job, {
+				state: "cancelled",
+				updatedAt,
+				error: abortReason,
+			})
+			: null;
+		if (nextJob) {
+			await writeSpawnJobFile(options.roomDir, nextJob);
+		}
+		const nextMember = member
+			? {
+				...member,
+				state: "removed" as const,
+				spawnTaskId: null,
+				spawnBatchId: null,
+				currentTask: null,
+				currentTaskMessageId: null,
+				sessionId: null,
+				queuedDeliveryMessageIds: null,
+				queuedTaskMessageIds: null,
+				lastError: abortReason,
+				updatedAt,
+			}
+			: null;
+		if (nextMember) {
+			await writeRoomMemberState(options.roomDir, nextMember);
+		}
+		const aborted = buildCrewControlLifecycleEvent({
+			record,
+			event: "aborted",
+			commandId: options.commandId,
+			reason: abortReason,
+			runtimeId: nextMember?.runtimeId ?? nextJob?.runtimeId ?? record.replay?.runtime_id ?? null,
+			roomId: record.replay?.room_id ?? null,
+		});
+		await persistCrewAddReplayEventLocked({
+			roomDir: options.roomDir,
+			requestId: record.request_id,
+			event: aborted,
+			member: nextMember,
+			job: nextJob,
+			updatedAt,
+		});
+		await persistCrewControlReplayRecord({
+			roomDir: options.roomDir,
+			verb: options.verb,
+			spawnTaskId: options.spawnTaskId,
+			commandId: options.commandId,
+			requestId: record.request_id,
+			outcome: aborted,
+			updatedAt,
+		});
+		return aborted;
+	});
+}
+
 export function getCrewAddReplayDeliveryGate(
 	record: CrewAddReplayRecord | null | undefined,
 ): CrewAddReplayDeliveryGate | null {
@@ -1459,6 +1917,46 @@ async function syncCrewAddReplayRecord(options: {
 	});
 }
 
+async function persistCrewAddReplayEventLocked(options: {
+	roomDir: string;
+	requestId: string;
+	event: CrewAddReplayableEvent;
+	member?: RoomMemberState | null;
+	job?: RoomSpawnJob | null;
+	updatedAt?: string;
+}): Promise<void> {
+	const record = await readCrewAddRequestReplay(options.roomDir, options.requestId);
+	if (!record) {
+		return;
+	}
+	const member = options.member === undefined
+		? await loadRoomMemberState(options.roomDir, record.member_name).catch(() => null)
+		: options.member;
+	const job = options.job === undefined
+		? await readSpawnJob(options.roomDir, record.spawn_task_id).catch(() => null)
+		: options.job;
+	const updatedAt = options.updatedAt ?? new Date().toISOString();
+	await writeCrewAddRequestReplayFile(options.roomDir, {
+		...record,
+		member_name: member?.name ?? record.member_name,
+		member_label: member ? formatMemberLabel(member) : record.member_label,
+		backend: job?.backend ?? member?.backend ?? record.backend,
+		bootstrap_token:
+			member?.bootstrapToken
+			?? job?.bootstrapToken
+			?? record.bootstrap_token
+			?? null,
+		replay: buildReplaySnapshotFromEvent({
+			record,
+			event: options.event,
+			member,
+			job,
+			updatedAt,
+		}),
+		updated_at: updatedAt,
+	});
+}
+
 export async function persistCrewAddReplayEvent(options: {
 	roomDir: string;
 	requestId: string;
@@ -1468,36 +1966,7 @@ export async function persistCrewAddReplayEvent(options: {
 	updatedAt?: string;
 }): Promise<void> {
 	await withRoomMutationLock(options.roomDir, async () => {
-		const record = await readCrewAddRequestReplay(options.roomDir, options.requestId);
-		if (!record) {
-			return;
-		}
-		const member = options.member === undefined
-			? await loadRoomMemberState(options.roomDir, record.member_name).catch(() => null)
-			: options.member;
-		const job = options.job === undefined
-			? await readSpawnJob(options.roomDir, record.spawn_task_id).catch(() => null)
-			: options.job;
-		const updatedAt = options.updatedAt ?? new Date().toISOString();
-		await writeCrewAddRequestReplayFile(options.roomDir, {
-			...record,
-			member_name: member?.name ?? record.member_name,
-			member_label: member ? formatMemberLabel(member) : record.member_label,
-			backend: job?.backend ?? member?.backend ?? record.backend,
-			bootstrap_token:
-				member?.bootstrapToken
-				?? job?.bootstrapToken
-				?? record.bootstrap_token
-				?? null,
-			replay: buildReplaySnapshotFromEvent({
-				record,
-				event: options.event,
-				member,
-				job,
-				updatedAt,
-			}),
-			updated_at: updatedAt,
-		});
+		await persistCrewAddReplayEventLocked(options);
 	});
 }
 

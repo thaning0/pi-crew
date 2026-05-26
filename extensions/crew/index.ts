@@ -50,6 +50,7 @@ import {
 	executeCrewRead,
 	executeCrewWho,
 	executeCrewTasks,
+	executeCrewControl,
 	queueCrewAdd,
 	queueCrewTell,
 } from "./tools.ts";
@@ -77,6 +78,7 @@ import {
 import { createRoomLogger, closeLogStream } from "./logger.ts";
 import type {
 	CrewAddActivation,
+	CrewAddReplayableEvent,
 	QueuedCrewAddRequest,
 	RoomMessage,
 	RoomSpawnAdapter,
@@ -210,6 +212,51 @@ function normalizeCrewAddEventData(rawData: unknown): QueuedCrewAddRequest {
 		hold_timeout_ms,
 		metadata,
 	};
+}
+
+interface CrewControlEventData {
+	spawn_task_id: string;
+	command_id?: string;
+	request_id?: string;
+	reason?: string;
+}
+
+function normalizeCrewControlEventData(
+	rawData: unknown,
+	verb: "release" | "abort",
+): CrewControlEventData {
+	if (!isObjectRecord(rawData)) {
+		throw new ValidationError(`crew:${verb} requires a spawn_task_id.`);
+	}
+	const spawnTaskId = readOptionalTrimmedString(rawData.spawn_task_id);
+	if (!spawnTaskId) {
+		throw new ValidationError(`crew:${verb} requires a non-empty spawn_task_id.`);
+	}
+	const commandId = readOptionalTrimmedString(rawData.command_id);
+	const requestId = readOptionalString(rawData.request_id);
+	if (requestId !== undefined && requestId.trim().length === 0) {
+		throw new ValidationError("request_id must not be empty when provided.");
+	}
+	if (rawData.reason !== undefined && typeof rawData.reason !== "string") {
+		throw new ValidationError("reason must be a string when provided.");
+	}
+	return {
+		spawn_task_id: spawnTaskId,
+		command_id: commandId,
+		request_id: requestId,
+		reason: readOptionalTrimmedString(rawData.reason),
+	};
+}
+
+async function emitCrewControlOutcome(
+	pi: ExtensionAPI,
+	payload: CrewAddReplayableEvent,
+): Promise<void> {
+	try {
+		await pi.events.emit("crew:event", payload);
+	} catch {
+		// Best-effort only: control feedback must not block command handling.
+	}
 }
 
 
@@ -987,6 +1034,48 @@ export default function roomExtension(
 			}
 		})();
 	});
+
+	for (const verb of ["release", "abort"] as const) {
+		pi.events.on(`crew:${verb}`, (rawData: unknown) => {
+			let data: CrewControlEventData;
+			try {
+				data = normalizeCrewControlEventData(rawData, verb);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				createRoomLogger(null, "room").error(`crew:${verb} rejected: invalid control request`, {
+					data: String(rawData),
+					error: message,
+				});
+				return;
+			}
+
+			const ownerRoom = getActiveOwnerRoom();
+			if (!ownerRoom) {
+				createRoomLogger(null, "room").error(`crew:${verb} rejected: no active owner room`);
+				return;
+			}
+
+			(async () => {
+				try {
+					const outcome = await executeCrewControl(
+						{
+							verb,
+							...data,
+						},
+						{
+							activeRoom: ownerRoom,
+						},
+					);
+					await emitCrewControlOutcome(pi, outcome);
+				} catch (err) {
+					createRoomLogger(ownerRoom.roomDir, "room").error(`crew:${verb} handler failed`, {
+						error: err instanceof Error ? err.message : String(err),
+						spawnTaskId: data.spawn_task_id,
+					});
+				}
+			})();
+		});
+	}
 
 	pi.events.on("crew:tell", (rawData: unknown) => {
 		const data = rawData as CrewTellEventData;

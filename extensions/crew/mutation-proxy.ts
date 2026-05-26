@@ -327,6 +327,7 @@ export class MutationProxyServer {
           return {
             ...finalized.member,
             claimedEvent: result.claimedEvent,
+            activatedEvent: result.activatedEvent,
           };
         }
         this.logger.debug("claim_member_session done", {
@@ -364,6 +365,7 @@ export class MutationProxyServer {
           return {
             ...finalized.member,
             claimedEvent: result.claimedEvent,
+            activatedEvent: result.activatedEvent,
           };
         }
         this.logger.debug("mark_member_joined done", {

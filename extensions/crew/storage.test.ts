@@ -1639,6 +1639,375 @@ describe("Member identity helpers", () => {
 				expect(await readSpawnJob(created.roomDir, "spawn-request-terminal-1")).toBeNull();
 			});
 		});
+
+		it("persists release control replay records and replays identical command_ids", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-control-release",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				const readCrewAddRequestReplay = (storage as {
+					readCrewAddRequestReplay?: (roomDir: string, requestId: string) => Promise<any>;
+				}).readCrewAddRequestReplay;
+				const applyCrewControlCommand = (storage as {
+					applyCrewControlCommand?: (options: {
+						roomDir: string;
+						verb: "release" | "abort";
+						spawnTaskId: string;
+						commandId?: string;
+						requestId?: string;
+						reason?: string;
+					}) => Promise<any>;
+				}).applyCrewControlCommand;
+				const readCrewControlReplay = (storage as {
+					readCrewControlReplay?: (roomDir: string, options: {
+						verb: "release" | "abort";
+						spawnTaskId: string;
+						commandId: string;
+					}) => Promise<any>;
+				}).readCrewControlReplay;
+				expect(applyCrewControlCommand).toBeTypeOf("function");
+				expect(readCrewControlReplay).toBeTypeOf("function");
+
+				await createSpawningMember(created.roomDir, {
+					name: "held-control-worker",
+					displayName: "held-control-worker",
+					type: "worker",
+					backend: "pi",
+					taskId: "spawn-control-release",
+					bootstrapToken: "bootstrap-control-release",
+					requestReplay: {
+						requestId: "req-control-release",
+						requestedName: "held-control-worker",
+						type: "worker",
+						model: null,
+						task: null,
+						transient: false,
+						metadata: { source: "control-release" },
+						activation: "manual",
+						holdTimeoutMs: 45_000,
+					},
+				} as never);
+				await markMemberJoined({
+					bootstrap: {
+						version: 1,
+						roomId: created.metadata.roomId,
+						roomDir: created.roomDir,
+						memberName: "held-control-worker",
+						memberType: "worker",
+						ownerName: "owner",
+						ownerSessionId: created.metadata.ownerSessionId,
+						token: "bootstrap-control-release",
+						spawnTaskId: "spawn-control-release",
+					},
+					sessionId: "held-control-worker-session",
+					runtimeId: "held-control-worker-runtime",
+					backend: "pi",
+				});
+
+				const first = await applyCrewControlCommand?.({
+					roomDir: created.roomDir,
+					verb: "release",
+					spawnTaskId: "spawn-control-release",
+					commandId: "release-command-1",
+					requestId: "req-control-release",
+				});
+				const replayed = await applyCrewControlCommand?.({
+					roomDir: created.roomDir,
+					verb: "release",
+					spawnTaskId: "spawn-control-release",
+					commandId: "release-command-1",
+					requestId: "req-control-release",
+				});
+
+				expect(first).toMatchObject({
+					event: "activated",
+					phase: "activation",
+					command_id: "release-command-1",
+					spawn_task_id: "spawn-control-release",
+					delivery_state: "enabled",
+				});
+				expect(replayed).toMatchObject({
+					event_id: first?.event_id,
+					event: "activated",
+					phase: "activation",
+					command_id: "release-command-1",
+				});
+				expect(await readCrewControlReplay?.(created.roomDir, {
+					verb: "release",
+					spawnTaskId: "spawn-control-release",
+					commandId: "release-command-1",
+				})).toMatchObject({
+					verb: "release",
+					spawn_task_id: "spawn-control-release",
+					command_id: "release-command-1",
+					outcome: {
+						event: "activated",
+						phase: "activation",
+					},
+				});
+				expect(await readCrewAddRequestReplay?.(created.roomDir, "req-control-release")).toMatchObject({
+					replay: {
+						event: "activated",
+						phase: "activation",
+						delivery_state: "enabled",
+						delivery: {
+							state: "enabled",
+						},
+					},
+				});
+			});
+		});
+
+		it("persists explicit aborted delivery metadata for control aborts", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-control-abort",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				const readCrewAddRequestReplay = (storage as {
+					readCrewAddRequestReplay?: (roomDir: string, requestId: string) => Promise<any>;
+				}).readCrewAddRequestReplay;
+				const applyCrewControlCommand = (storage as {
+					applyCrewControlCommand?: (options: {
+						roomDir: string;
+						verb: "release" | "abort";
+						spawnTaskId: string;
+						commandId?: string;
+						requestId?: string;
+						reason?: string;
+					}) => Promise<any>;
+				}).applyCrewControlCommand;
+				expect(applyCrewControlCommand).toBeTypeOf("function");
+
+				await createSpawningMember(created.roomDir, {
+					name: "held-abort-worker",
+					displayName: "held-abort-worker",
+					type: "worker",
+					backend: "pi",
+					taskId: "spawn-control-abort",
+					bootstrapToken: "bootstrap-control-abort",
+					requestReplay: {
+						requestId: "req-control-abort",
+						requestedName: "held-abort-worker",
+						type: "worker",
+						model: null,
+						task: null,
+						transient: false,
+						metadata: { source: "control-abort" },
+						activation: "manual",
+						holdTimeoutMs: 45_000,
+					},
+				} as never);
+				await markMemberJoined({
+					bootstrap: {
+						version: 1,
+						roomId: created.metadata.roomId,
+						roomDir: created.roomDir,
+						memberName: "held-abort-worker",
+						memberType: "worker",
+						ownerName: "owner",
+						ownerSessionId: created.metadata.ownerSessionId,
+						token: "bootstrap-control-abort",
+						spawnTaskId: "spawn-control-abort",
+					},
+					sessionId: "held-abort-worker-session",
+					runtimeId: "held-abort-worker-runtime",
+					backend: "pi",
+				});
+
+				const aborted = await applyCrewControlCommand?.({
+					roomDir: created.roomDir,
+					verb: "abort",
+					spawnTaskId: "spawn-control-abort",
+					commandId: "abort-command-1",
+					requestId: "req-control-abort",
+				});
+
+				expect(aborted).toMatchObject({
+					event: "aborted",
+					phase: "activation",
+					reason: "caller_abort",
+					delivery_state: "ended",
+					command_id: "abort-command-1",
+				});
+				const persisted = await readCrewAddRequestReplay?.(created.roomDir, "req-control-abort");
+				expect(persisted?.replay).toMatchObject({
+					event: "aborted",
+					phase: "activation",
+					reason: "caller_abort",
+					delivery_state: "ended",
+				});
+				expect(persisted?.replay?.delivery).toMatchObject({
+					activation: "manual",
+					state: "ended",
+				});
+				expect(typeof persisted?.replay?.delivery?.aborted_at).toBe("string");
+				expect(typeof persisted?.replay?.delivery?.ended_at).toBe("string");
+			});
+		});
+
+		it("returns activation-phase failures for conflicting command reuse and opposite-terminal control", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-control-failures",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				const readCrewAddRequestReplay = (storage as {
+					readCrewAddRequestReplay?: (roomDir: string, requestId: string) => Promise<any>;
+				}).readCrewAddRequestReplay;
+				const applyCrewControlCommand = (storage as {
+					applyCrewControlCommand?: (options: {
+						roomDir: string;
+						verb: "release" | "abort";
+						spawnTaskId: string;
+						commandId?: string;
+						requestId?: string;
+						reason?: string;
+					}) => Promise<any>;
+				}).applyCrewControlCommand;
+				expect(applyCrewControlCommand).toBeTypeOf("function");
+
+				await createSpawningMember(created.roomDir, {
+					name: "held-failure-worker",
+					displayName: "held-failure-worker",
+					type: "worker",
+					backend: "pi",
+					taskId: "spawn-control-failures",
+					bootstrapToken: "bootstrap-control-failures",
+					requestReplay: {
+						requestId: "req-control-failures",
+						requestedName: "held-failure-worker",
+						type: "worker",
+						model: null,
+						task: null,
+						transient: false,
+						metadata: { source: "control-failures" },
+						activation: "manual",
+						holdTimeoutMs: 45_000,
+					},
+				} as never);
+				await markMemberJoined({
+					bootstrap: {
+						version: 1,
+						roomId: created.metadata.roomId,
+						roomDir: created.roomDir,
+						memberName: "held-failure-worker",
+						memberType: "worker",
+						ownerName: "owner",
+						ownerSessionId: created.metadata.ownerSessionId,
+						token: "bootstrap-control-failures",
+						spawnTaskId: "spawn-control-failures",
+					},
+					sessionId: "held-failure-worker-session",
+					runtimeId: "held-failure-worker-runtime",
+					backend: "pi",
+				});
+				await createSpawningMember(created.roomDir, {
+					name: "held-failure-worker-2",
+					displayName: "held-failure-worker-2",
+					type: "worker",
+					backend: "pi",
+					taskId: "spawn-control-failures-2",
+					bootstrapToken: "bootstrap-control-failures-2",
+					requestReplay: {
+						requestId: "req-control-failures-2",
+						requestedName: "held-failure-worker-2",
+						type: "worker",
+						model: null,
+						task: null,
+						transient: false,
+						metadata: { source: "control-failures-2" },
+						activation: "manual",
+						holdTimeoutMs: 45_000,
+					},
+				} as never);
+				await markMemberJoined({
+					bootstrap: {
+						version: 1,
+						roomId: created.metadata.roomId,
+						roomDir: created.roomDir,
+						memberName: "held-failure-worker-2",
+						memberType: "worker",
+						ownerName: "owner",
+						ownerSessionId: created.metadata.ownerSessionId,
+						token: "bootstrap-control-failures-2",
+						spawnTaskId: "spawn-control-failures-2",
+					},
+					sessionId: "held-failure-worker-session-2",
+					runtimeId: "held-failure-worker-runtime-2",
+					backend: "pi",
+				});
+
+				const activated = await applyCrewControlCommand?.({
+					roomDir: created.roomDir,
+					verb: "release",
+					spawnTaskId: "spawn-control-failures",
+					commandId: "shared-command-id",
+					requestId: "req-control-failures",
+				});
+				const conflict = await applyCrewControlCommand?.({
+					roomDir: created.roomDir,
+					verb: "abort",
+					spawnTaskId: "spawn-control-failures",
+					commandId: "shared-command-id",
+					requestId: "req-control-failures",
+				});
+				const spawnConflict = await applyCrewControlCommand?.({
+					roomDir: created.roomDir,
+					verb: "release",
+					spawnTaskId: "spawn-control-failures-2",
+					commandId: "shared-command-id",
+					requestId: "req-control-failures-2",
+				});
+				const oppositeTerminal = await applyCrewControlCommand?.({
+					roomDir: created.roomDir,
+					verb: "abort",
+					spawnTaskId: "spawn-control-failures",
+					commandId: "opposite-terminal-id",
+					requestId: "req-control-failures",
+				});
+
+				expect(activated?.event).toBe("activated");
+				expect(conflict).toMatchObject({
+					event: "failed",
+					phase: "activation",
+					command_id: "shared-command-id",
+					spawn_task_id: "spawn-control-failures",
+				});
+				expect(spawnConflict).toMatchObject({
+					event: "failed",
+					phase: "activation",
+					command_id: "shared-command-id",
+					spawn_task_id: "spawn-control-failures-2",
+				});
+				expect(oppositeTerminal).toMatchObject({
+					event: "failed",
+					phase: "activation",
+					command_id: "opposite-terminal-id",
+					spawn_task_id: "spawn-control-failures",
+				});
+				expect(await readCrewAddRequestReplay?.(created.roomDir, "req-control-failures")).toMatchObject({
+					replay: {
+						event: "activated",
+						phase: "activation",
+						delivery_state: "enabled",
+					},
+				});
+			});
+		});
 	});
 
 	it("creates valid internal names and keeps them unique across historical members", async () => {

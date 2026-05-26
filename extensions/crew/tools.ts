@@ -74,6 +74,7 @@ import {
 
 import type {
 	CrewAddReplayRecord,
+	CrewAddReplayableEvent,
 	QueuedCrewAddRequest,
 	QueuedCrewAddResult,
 	QueuedCrewTellResult,
@@ -102,6 +103,7 @@ import {
 	listRoomMembers,
 	loadRoomMemberState,
 	normalizeMemberDisplayName,
+	applyCrewControlCommand,
 	persistCrewAddReplayEvent,
 	prepareCrewAddReplay,
 	resolveMemberTarget,
@@ -526,6 +528,31 @@ type QueueCrewTellOptions = {
 	activeRoom: ActiveRoomContext;
 	batchContext?: QueueBatchContext;
 };
+
+export async function executeCrewControl(
+	params: {
+		verb: "release" | "abort";
+		spawn_task_id: string;
+		command_id?: string;
+		request_id?: string;
+		reason?: string;
+	},
+	options: {
+		activeRoom: ActiveRoomContext;
+	},
+): Promise<CrewAddReplayableEvent> {
+	if (options.activeRoom.role !== "owner") {
+		throw new Error("Only the lead may release or abort held generations.");
+	}
+	return await applyCrewControlCommand({
+		roomDir: options.activeRoom.roomDir,
+		verb: params.verb,
+		spawnTaskId: params.spawn_task_id,
+		commandId: params.command_id,
+		requestId: params.request_id,
+		reason: params.reason,
+	});
+}
 
 export function extractSummaryMentions(summary: string, senderName: string): string[] {
 	const mentions = new Set<string>();
