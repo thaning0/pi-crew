@@ -195,6 +195,29 @@ describe("crew:add request feedback", () => {
 		);
 	});
 
+	it("emits rejected for empty or whitespace-only request_id before queueing", async () => {
+		const harness = createHarness();
+		await cacheProjectCwd(harness.lifecycleHandlers);
+		setOwnerRoom();
+
+		harness.eventHandlers.get("crew:add")?.({
+			request_id: "   ",
+			name: "worker",
+			type: "builder",
+		});
+		await flushAsyncWork();
+
+		expect(queueCrewAddMock).not.toHaveBeenCalled();
+		expect(crewEventPayloads(harness.emit)).toContainEqual(
+			expect.objectContaining({
+				event: "rejected",
+				phase: "request",
+				request_id: "   ",
+				requested_name: "worker",
+			}),
+		);
+	});
+
 	it("emits rejected when there is no active owner room", async () => {
 		const harness = createHarness();
 		await cacheProjectCwd(harness.lifecycleHandlers);

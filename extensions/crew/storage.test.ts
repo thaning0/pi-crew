@@ -24,6 +24,7 @@ import {
 	loadRoomMemberState,
 	readMemberHeartbeat,
 	readSpawnJob,
+	transitionSpawnJob,
 	updateRoomMemberState,
 	updateSpawnJob,
 	withRoomMutationLock,
@@ -909,6 +910,7 @@ describe("Member identity helpers", () => {
 					type: "worker",
 					backend: "pi",
 					taskId: "spawn-request-repair-1",
+					bootstrapToken: "repair-bootstrap-token",
 					requestReplay: {
 						requestId: "req-repair-replay",
 						requestedName: "worker",
@@ -972,10 +974,12 @@ describe("Member identity helpers", () => {
 				await expect(loadRoomMemberState(created.roomDir, first.member.name)).resolves.toMatchObject({
 					name: first.member.name,
 					requestId: "req-repair-replay",
+					bootstrapToken: "repair-bootstrap-token",
 				});
 				await expect(readSpawnJob(created.roomDir, first.job.taskId)).resolves.toMatchObject({
 					taskId: first.job.taskId,
 					requestId: "req-repair-replay",
+					bootstrapToken: "repair-bootstrap-token",
 				});
 			});
 		});
@@ -1190,6 +1194,96 @@ describe("Member identity helpers", () => {
 					member_state: "error",
 					job_state: "failed",
 				});
+			});
+		});
+
+		it("does not re-materialize missing anchors for terminal replay states", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-request-replay-terminal-skip",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+
+				await createSpawningMember(created.roomDir, {
+					name: "terminal-worker",
+					displayName: "terminal-worker",
+					type: "worker",
+					backend: "pi",
+					taskId: "spawn-request-terminal-1",
+					bootstrapToken: "terminal-bootstrap-token",
+					requestReplay: {
+						requestId: "req-terminal-replay",
+						requestedName: "terminal-worker",
+						type: "worker",
+						model: null,
+						task: "terminal task",
+						transient: false,
+						metadata: { source: "terminal" },
+						activation: "immediate",
+						holdTimeoutMs: null,
+					},
+				} as never);
+				const staleTimestamp = new Date(Date.now() - 60_000).toISOString();
+				await transitionSpawnJob(created.roomDir, "spawn-request-terminal-1", {
+					state: "failed",
+					error: "spawn failed before claim",
+					updatedAt: staleTimestamp,
+				});
+				await updateRoomMemberState(created.roomDir, "terminal-worker", {
+					state: "error",
+					lastError: "spawn failed before claim",
+					updatedAt: staleTimestamp,
+				});
+
+				await fs.rm(getRoomMemberStatePath(created.roomDir, "terminal-worker"), { force: true });
+				await fs.rm(getRoomSpawnJobPath(created.roomDir, "spawn-request-terminal-1"), { force: true });
+
+				const replayed = await queueCrewAdd(
+					{
+						request_id: "req-terminal-replay",
+						name: "terminal-worker",
+						type: "worker",
+						task: "terminal task",
+						activation: "immediate",
+						metadata: { source: "retry-terminal" },
+					},
+					{
+						activeRoom: {
+							role: "owner",
+							roomDir: created.roomDir,
+							roomId: created.metadata.roomId,
+							memberName: "owner",
+							sessionId: created.metadata.ownerSessionId,
+						} as any,
+						sessionId: created.metadata.ownerSessionId,
+						ctx: {
+							cwd: tempDir,
+							hasUI: false,
+						} as any,
+						adapters: {
+							pi: {
+								kind: "pi",
+								async spawn() {
+									throw new Error("terminal replay should not spawn");
+								},
+							},
+							paseo: {
+								kind: "paseo",
+								async spawn() {
+									throw new Error("terminal replay should not spawn");
+								},
+							},
+						},
+					} as never,
+				);
+
+				expect(replayed.replayed).toBe(true);
+				expect(await loadRoomMemberState(created.roomDir, "terminal-worker").catch(() => null)).toBeNull();
+				expect(await readSpawnJob(created.roomDir, "spawn-request-terminal-1")).toBeNull();
 			});
 		});
 	});

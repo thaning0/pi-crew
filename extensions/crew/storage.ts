@@ -1003,6 +1003,7 @@ function buildCrewAddReplayRecord(options: {
 		member_label: formatMemberLabel(options.member),
 		backend: options.backend,
 		spawn_task_id: options.job.taskId,
+		bootstrap_token: options.member.bootstrapToken ?? options.job.bootstrapToken ?? null,
 		replay: null,
 		created_at: updatedAt,
 		updated_at: updatedAt,
@@ -1016,6 +1017,24 @@ function buildCrewAddReplayRecord(options: {
 			updatedAt,
 		}),
 	};
+}
+
+function isCrewAddReplayClearlyTerminal(record: CrewAddReplayRecord): boolean {
+	const replay = record.replay;
+	if (!replay || replay.event !== "ended") {
+		return false;
+	}
+	if (
+		replay.reason === "spawn-timeout-claim"
+		|| replay.reason === "spawn-timeout-external"
+	) {
+		return false;
+	}
+	return replay.job_state === "failed"
+		|| replay.job_state === "cancelled"
+		|| replay.member_state === "removed"
+		|| replay.member_state === "stopping"
+		|| replay.member_state === "error";
 }
 
 function materializeReplayMember(record: CrewAddReplayRecord, member: RoomMemberState | null): RoomMemberState {
@@ -1045,7 +1064,7 @@ function materializeReplayMember(record: CrewAddReplayRecord, member: RoomMember
 		heartbeatAt: null,
 		lastActiveAt: record.updated_at,
 		sessionId: null,
-		bootstrapToken: null,
+		bootstrapToken: record.bootstrap_token ?? null,
 		bootstrapClaimedAt: null,
 		pendingSelfAckMessageId: null,
 	};
@@ -1061,7 +1080,7 @@ function materializeReplayJob(record: CrewAddReplayRecord, job: RoomSpawnJob | n
 		requestId: record.request_id,
 		backend: record.backend,
 		runtimeId: record.replay?.runtime_id ?? null,
-		bootstrapToken: null,
+		bootstrapToken: record.bootstrap_token ?? null,
 		state: record.replay?.job_state ?? "starting",
 		createdAt: record.created_at,
 		updatedAt: record.updated_at,
@@ -1069,9 +1088,15 @@ function materializeReplayJob(record: CrewAddReplayRecord, job: RoomSpawnJob | n
 	};
 }
 
-async function repairCrewAddReplayAnchors(record: CrewAddReplayRecord, roomDir: string): Promise<{ member: RoomMemberState; job: RoomSpawnJob }> {
+async function resolveCrewAddReplayAnchors(record: CrewAddReplayRecord, roomDir: string): Promise<{ member: RoomMemberState; job: RoomSpawnJob }> {
 	const existingMember = await loadRoomMemberState(roomDir, record.member_name).catch(() => null);
 	const existingJob = await readSpawnJob(roomDir, record.spawn_task_id).catch(() => null);
+	if (isCrewAddReplayClearlyTerminal(record)) {
+		return {
+			member: materializeReplayMember(record, existingMember),
+			job: materializeReplayJob(record, existingJob),
+		};
+	}
 	const member = materializeReplayMember(record, existingMember);
 	const job = materializeReplayJob(record, existingJob);
 	if (!existingMember) {
@@ -1101,7 +1126,7 @@ export async function prepareCrewAddReplay(roomDir: string, requestId: string): 
 		if (!record) {
 			return null;
 		}
-		await repairCrewAddReplayAnchors(record, roomDir);
+		await resolveCrewAddReplayAnchors(record, roomDir);
 		return record;
 	});
 }
@@ -1144,6 +1169,11 @@ async function syncCrewAddReplayRecord(options: {
 		member_name: member?.name ?? record.member_name,
 		member_label: member ? formatMemberLabel(member) : record.member_label,
 		backend: job?.backend ?? member?.backend ?? record.backend,
+		bootstrap_token:
+			member?.bootstrapToken
+			?? job?.bootstrapToken
+			?? record.bootstrap_token
+			?? null,
 		replay: buildCrewAddReplayLifecycleSnapshot({
 			record,
 			member,
@@ -2241,7 +2271,7 @@ export async function createSpawningMember(
 						{ crewAddReason: "request-id-conflict" },
 					);
 				}
-				const repaired = await repairCrewAddReplayAnchors(existingReplay, roomDir);
+				const repaired = await resolveCrewAddReplayAnchors(existingReplay, roomDir);
 				return {
 					member: repaired.member,
 					job: repaired.job,

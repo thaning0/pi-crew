@@ -160,6 +160,10 @@ function normalizeCrewAddEventData(rawData: unknown): QueuedCrewAddRequest {
 	if (rawData.request_id !== undefined && typeof rawData.request_id !== "string") {
 		throw new ValidationError("request_id must be a string when provided.");
 	}
+	const requestId = readOptionalString(rawData.request_id);
+	if (requestId !== undefined && requestId.trim().length === 0) {
+		throw new ValidationError("request_id must not be empty when provided.");
+	}
 
 	let activation: CrewAddActivation | undefined;
 	if (rawData.activation !== undefined) {
@@ -196,7 +200,7 @@ function normalizeCrewAddEventData(rawData: unknown): QueuedCrewAddRequest {
 	}
 
 	return {
-		request_id: readOptionalString(rawData.request_id),
+		request_id: requestId,
 		name,
 		type,
 		model: readOptionalTrimmedString(rawData.model),

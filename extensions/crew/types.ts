@@ -278,6 +278,7 @@ export interface CrewAddReplayRecord {
 	member_label: string;
 	backend: RoomBackend;
 	spawn_task_id: string;
+	bootstrap_token?: string | null;
 	replay: CrewAddReplayLifecycleSnapshot | null;
 	created_at: string;
 	updated_at: string;
