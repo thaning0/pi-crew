@@ -10,6 +10,7 @@ declare module "@mariozechner/pi-agent-core" {
 
 declare module "@mariozechner/pi-coding-agent" {
 	import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
+	import type { EventBus } from "@mariozechner/pi-coding-agent";
 
 	export interface ExtensionContext {
 		cwd?: string;
@@ -49,6 +50,7 @@ declare module "@mariozechner/pi-coding-agent" {
 	}
 
 	export interface ExtensionAPI {
+		events: EventBus;
 		on(
 			event: string,
 			handler: (

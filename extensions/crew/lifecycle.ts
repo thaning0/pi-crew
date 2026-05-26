@@ -125,6 +125,20 @@ export function clearActiveRoom(sessionId: string): void {
 	ownerClassificationUnavailableSessions.delete(sessionId);
 }
 
+/**
+ * Return the first active owner room context, or null if no owner is active.
+ * Used by programmatic event handlers (crew:add, crew:tell) that need to
+ * resolve the owner room without a sessionId or ExtensionContext.
+ */
+export function getActiveOwnerRoom(): ActiveRoomContext | null {
+	for (const room of activeRooms.values()) {
+		if (room.role === "owner" && !room.shuttingDown) {
+			return room;
+		}
+	}
+	return null;
+}
+
 export function markOwnerClassificationUnavailable(sessionId: string): void {
 	ownerClassificationReadySessions.delete(sessionId);
 	ownerClassificationUnavailableSessions.add(sessionId);

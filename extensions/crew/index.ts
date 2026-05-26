@@ -13,6 +13,7 @@ import {
 	ensureRoomMutationClientConnected,
 	clearOwnerClassificationUnavailable,
 	clearOwnerClassificationReady,
+	getActiveOwnerRoom,
 	getActiveRoom,
 	getOwnerShutdownTaskGraceMs,
 	getSessionId,
@@ -49,6 +50,8 @@ import {
 	executeCrewRead,
 	executeCrewWho,
 	executeCrewTasks,
+	queueCrewAdd,
+	queueCrewTell,
 } from "./tools.ts";
 import { CrewBatchSchema } from "./schemas.ts";
 import { executeCrewBatch } from "./batch.ts";
@@ -135,6 +138,10 @@ export default function roomExtension(
 	};
 	const ownerName = options.ownerName ?? "lead";
 
+	// Cached project working directory from the first session_start.
+	// Used by event_bus handlers (crew:add) that don't have an ExtensionContext.
+	let projectCwd: string | null = null;
+
 	const createOwnerRoomContext = (
 		roomDir: string,
 		metadata: Awaited<ReturnType<typeof loadRoomMetadata>>,
@@ -160,6 +167,9 @@ export default function roomExtension(
 	pi.on("session_start", async (_event, ctx) => {
 		const sessionId = getSessionId(ctx);
 		const systemPrompt = ctx.getSystemPrompt?.() ?? "";
+
+		// Cache cwd for event_bus handlers that don't have an ExtensionContext.
+		projectCwd ??= ctx.cwd;
 
 		// Parse bootstrap early: if this is a member session, filter tools BEFORE
 		// activateBootstrapRoom triggers any turns via deliverRoomMessage.
@@ -732,6 +742,124 @@ export default function roomExtension(
 				summary: boardSummary,
 			}).catch(() => {});
 		}
+	});
+
+	// ── Event data interfaces for extension-to-extension communication ──
+
+	/** Event data for crew:add — emitted by other extensions to spawn a sub-agent. */
+	interface CrewAddEventData {
+		name: string;       // agent alias (required)
+		type: string;       // agent role type (required)
+		model?: string;     // optional model override
+		task?: string;      // optional initial task content
+		transient?: boolean;// transient agent flag
+	}
+
+	/** Event data for crew:tell — emitted by other extensions to send a message
+	 *  to a crew member. Used for follow-up communication after spawn. */
+	interface CrewTellEventData {
+		to: string;           // target agent alias or "room" (required)
+		summary: string;      // message summary (required)
+		content?: string;     // message body
+		kind?: "task" | "info" | "question"; // message kind (default: "info")
+		broadcast?: boolean;  // broadcast to all members
+	}
+
+	// ── Programmatic event bus listeners (extension-to-extension comms) ──
+
+	pi.events.on("crew:add", (rawData: unknown) => {
+		const data = rawData as CrewAddEventData;
+		if (!data || typeof data.name !== "string" || !data.name.trim()
+			|| typeof data.type !== "string" || !data.type.trim()) {
+			createRoomLogger(null, "room").error("crew:add rejected: missing name or type", {
+				data: String(rawData),
+			});
+			return;
+		}
+
+		if (!projectCwd) {
+			createRoomLogger(null, "room").error("crew:add rejected: projectCwd not cached (no session_start yet)");
+			return;
+		}
+
+		const ownerRoom = getActiveOwnerRoom();
+		if (!ownerRoom) {
+			createRoomLogger(null, "room").error("crew:add rejected: no active owner room");
+			return;
+		}
+
+		// Construct RoomExecCtx from event data.
+		// RoomExecCtx = RoomExecutionContext & { currentModel?, ... }
+		// RoomExecutionContext = { cwd: string; hasUI: boolean; model?: string; }
+		// sessionId is passed separately in QueueCrewAddOptions, NOT in RoomExecCtx.
+		const ctx = {
+			cwd: projectCwd,
+			hasUI: false,
+		};
+
+		// Fire-and-forget: don't block the event bus
+		(async () => {
+			try {
+				await queueCrewAdd(
+					{
+						name: data.name.trim(),
+						type: data.type.trim(),
+						model: data.model?.trim() || undefined,
+						task: data.task?.trim() || undefined,
+						transient: data.transient === true || undefined,
+					},
+					{
+						activeRoom: ownerRoom,
+						sessionId: ownerRoom.sessionId,
+						ctx,
+						adapters,
+					},
+				);
+			} catch (err) {
+				createRoomLogger(ownerRoom.roomDir, "room").error("crew:add handler failed", {
+					error: err instanceof Error ? err.message : String(err),
+					agentName: data.name,
+				});
+			}
+		})();
+	});
+
+	pi.events.on("crew:tell", (rawData: unknown) => {
+		const data = rawData as CrewTellEventData;
+		if (!data || typeof data.summary !== "string" || !data.summary.trim()) {
+			createRoomLogger(null, "room").error("crew:tell rejected: missing summary", {
+				data: String(rawData),
+			});
+			return;
+		}
+
+		const ownerRoom = getActiveOwnerRoom();
+		if (!ownerRoom) {
+			createRoomLogger(null, "room").error("crew:tell rejected: no active owner room");
+			return;
+		}
+
+		(async () => {
+			try {
+				await queueCrewTell(
+					{
+						to: data.to?.trim() || undefined,
+						summary: data.summary.trim(),
+						content: data.content?.trim() || undefined,
+						kind: data.kind ?? "info",
+						broadcast: data.broadcast,
+					},
+					{
+						activeRoom: ownerRoom,
+					},
+				);
+			} catch (err) {
+				createRoomLogger(ownerRoom.roomDir, "room").error("crew:tell handler failed", {
+					error: err instanceof Error ? err.message : String(err),
+					to: data.to,
+				});
+			}
+		})();
 	});
 
 	const registerTool = pi.registerTool.bind(pi) as (definition: any) => void;
