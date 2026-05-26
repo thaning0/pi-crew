@@ -573,6 +573,23 @@ function buildRevisionTaskContent(
 	].join("\n");
 }
 
+function buildInitialReviewerTaskContent(initialReviewTask: string): string {
+	return [
+		initialReviewTask,
+		"",
+		"───",
+		"⚠️  VERDICT REQUIRED — Without this the loop cannot proceed.",
+		"",
+		"You MUST reply with crew_reply(kind=\"completion\", ...) and include the verdict in the summary:",
+		"- If the artifact passes review:  summary=\"VERDICT: PASS — <short reason>\"",
+		"- If issues are found:           summary=\"VERDICT: FAIL — <short reason>\"",
+		"",
+		"Put your full review notes in the content field.",
+		"Use error/cancelled only when the review itself could not be completed (not for rejection).",
+		"A missing or malformed VERDICT is a protocol failure — the loop will abort.",
+	].join("\n");
+}
+
 function buildFixerTaskContent(reviewerFeedback: string): string {
 	return [
 		"Fix the issues identified in the review.",
@@ -589,11 +606,17 @@ function buildReviewFixReviewerTaskContent(
 ): string {
 	return [
 		`Review the fix for round ${round}.`,
-		"Return an explicit verdict envelope with crew_reply(kind=\"completion\", ...).",
-		"- Pass: crew_reply(kind=\"completion\", summary=\"VERDICT: PASS — <short reason>\", content=\"<full review notes>\")",
-		"- Fail: crew_reply(kind=\"completion\", summary=\"VERDICT: FAIL — <short reason>\", content=\"<full review notes>\")",
-		"Use error/cancelled only when the review could not be completed; error/cancelled means review execution failed, not rejection.",
-		"A missing or malformed verdict is a protocol failure.",
+		"",
+		"───",
+		"⚠️  VERDICT REQUIRED — Without this the loop cannot proceed.",
+		"",
+		"You MUST reply with crew_reply(kind=\"completion\", ...) and include the verdict in the summary:",
+		"- If the fix resolves all issues:  summary=\"VERDICT: PASS — <short reason>\"",
+		"- If issues remain:                summary=\"VERDICT: FAIL — <short reason>\"",
+		"",
+		"Put your full review notes in the content field.",
+		"Use error/cancelled only when the review itself could not be completed (not for rejection).",
+		"A missing or malformed VERDICT is a protocol failure — the loop will abort.",
 		"",
 		`Fixer output: ${formatReplySummary(fixerReply.reply)}`,
 		`Original review feedback: ${originalFeedback}`,
@@ -1198,7 +1221,7 @@ export async function executeReviewFixLoop(
 			to: reviewer.queued.memberName,
 			kind: "task",
 			summary: "Review task round 1",
-			content: parsed.initialReviewTask,
+			content: buildInitialReviewerTaskContent(parsed.initialReviewTask),
 		},
 		{ activeRoom, batchContext },
 	);
