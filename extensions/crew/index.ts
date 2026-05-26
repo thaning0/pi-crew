@@ -62,12 +62,14 @@ import {
 	getDefaultRoomRuntimeRoot,
 	formatMemberLabel,
 	listRoomMembers,
+	readCrewAddRequestReplay,
 	loadRoomMemberState,
 	loadRoomMetadata,
 	updateRoomMemberState,
 	writeRoomMetadata,
 	writeRoomMemberState,
 	appendMessage,
+	emitCrewTerminatedOutcome,
 } from "./storage.ts";
 import {
 	withRoomMutationLock,
@@ -824,15 +826,39 @@ export default function roomExtension(
 				});
 				await updateRoomMemberState(activeRoom.roomDir, activeRoom.memberName, {
 					state: "error",
+					runtimeId: null,
 					sessionId: null,
 					currentTask: null,
 					currentTaskMessageId: null,
 					chatBusy: false,
 					todoProgress: null,
+					spawnTaskId: null,
 					lastError: currentMember.lastError ?? "Member session shut down.",
 				}).catch((err) =>
 					log.error("shutdown member update failed", { error: String(err) }),
 				);
+				const terminalOutcome = await emitCrewTerminatedOutcome({
+					roomDir: activeRoom.roomDir,
+					requestId: currentMember.requestId ?? undefined,
+					spawnTaskId: currentMember.spawnTaskId ?? undefined,
+					memberName: currentMember.name,
+					reason: "session_shutdown",
+				}).catch((err) =>
+					log.error("shutdown terminal emit failed", { error: String(err) }),
+				) ?? null;
+				if (!terminalOutcome && currentMember.requestId) {
+					const persistedReplay = await readCrewAddRequestReplay(
+						activeRoom.roomDir,
+						currentMember.requestId,
+					).catch(() => null);
+					if (persistedReplay?.replay?.event === "terminated") {
+						await emitCrewLifecycleEvent(persistedReplay.replay).catch((err) =>
+							log.error("shutdown terminal replay emit failed", {
+								error: String(err),
+							}),
+						);
+					}
+				}
 			}
 		}
 		// Shut down mutation proxy if running (before reaping room, so logger still works)

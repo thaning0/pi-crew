@@ -1640,6 +1640,381 @@ describe("Member identity helpers", () => {
 			});
 		});
 
+		it("replays persisted terminated outcomes without re-materializing anchors", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-request-replay-terminated",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				const emitCrewTerminatedOutcome = (storage as {
+					emitCrewTerminatedOutcome?: (options: {
+						roomDir: string;
+						requestId?: string;
+						spawnTaskId?: string;
+						memberName?: string;
+						reason: string;
+					}) => Promise<any>;
+				}).emitCrewTerminatedOutcome;
+				expect(emitCrewTerminatedOutcome).toBeTypeOf("function");
+
+				await createSpawningMember(created.roomDir, {
+					name: "terminated-worker",
+					displayName: "terminated-worker",
+					type: "worker",
+					backend: "pi",
+					taskId: "spawn-request-terminated-1",
+					bootstrapToken: "terminated-bootstrap-token",
+					requestReplay: {
+						requestId: "req-terminated-replay",
+						requestedName: "terminated-worker",
+						type: "worker",
+						model: null,
+						task: "terminal task",
+						transient: false,
+						metadata: { source: "terminated" },
+						activation: "immediate",
+						holdTimeoutMs: null,
+					},
+				} as never);
+				await markMemberJoined({
+					bootstrap: {
+						version: 1,
+						roomId: created.metadata.roomId,
+						roomDir: created.roomDir,
+						memberName: "terminated-worker",
+						memberType: "worker",
+						ownerName: "owner",
+						ownerSessionId: created.metadata.ownerSessionId,
+						token: "terminated-bootstrap-token",
+						spawnTaskId: "spawn-request-terminated-1",
+					},
+					sessionId: "terminated-worker-session",
+					runtimeId: String(process.pid),
+					backend: "pi",
+				});
+				await updateRoomMemberState(created.roomDir, "terminated-worker", {
+					state: "removed",
+					runtimeId: null,
+					sessionId: null,
+					spawnTaskId: null,
+					updatedAt: new Date().toISOString(),
+				});
+
+				const terminated = await emitCrewTerminatedOutcome?.({
+					roomDir: created.roomDir,
+					requestId: "req-terminated-replay",
+					spawnTaskId: "spawn-request-terminated-1",
+					memberName: "terminated-worker",
+					reason: "removed",
+				});
+				expect(terminated).toMatchObject({
+					event: "terminated",
+					phase: "delivery",
+					request_id: "req-terminated-replay",
+					spawn_task_id: "spawn-request-terminated-1",
+					reason: "removed",
+					delivery_state: "ended",
+				});
+
+				await fs.rm(getRoomMemberStatePath(created.roomDir, "terminated-worker"), { force: true });
+				await fs.rm(getRoomSpawnJobPath(created.roomDir, "spawn-request-terminated-1"), { force: true });
+
+				const replayed = await queueCrewAdd(
+					{
+						request_id: "req-terminated-replay",
+						name: "terminated-worker",
+						type: "worker",
+						task: "terminal task",
+						activation: "immediate",
+						metadata: { source: "retry-terminated" },
+					},
+					{
+						activeRoom: {
+							role: "owner",
+							roomDir: created.roomDir,
+							roomId: created.metadata.roomId,
+							memberName: "owner",
+							sessionId: created.metadata.ownerSessionId,
+						} as any,
+						sessionId: created.metadata.ownerSessionId,
+						ctx: {
+							cwd: tempDir,
+							hasUI: false,
+						} as any,
+						adapters: {
+							pi: {
+								kind: "pi",
+								async spawn() {
+									throw new Error("terminated replay should not spawn");
+								},
+							},
+							paseo: {
+								kind: "paseo",
+								async spawn() {
+									throw new Error("terminated replay should not spawn");
+								},
+							},
+						},
+					} as never,
+				);
+
+				expect(replayed.replayed).toBe(true);
+				expect(replayed.replayedLifecycleEvent).toMatchObject({
+					event: "terminated",
+					phase: "delivery",
+					request_id: "req-terminated-replay",
+					spawn_task_id: "spawn-request-terminated-1",
+					reason: "removed",
+				});
+				expect(await loadRoomMemberState(created.roomDir, "terminated-worker").catch(() => null)).toBeNull();
+				expect(await readSpawnJob(created.roomDir, "spawn-request-terminated-1")).toBeNull();
+			});
+		});
+
+		it("dedupes repeated terminal reconciliation for the same generation", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-terminal-dedupe",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				const emitCrewTerminatedOutcome = (storage as {
+					emitCrewTerminatedOutcome?: (options: {
+						roomDir: string;
+						requestId?: string;
+						spawnTaskId?: string;
+						memberName?: string;
+						reason: string;
+					}) => Promise<any>;
+				}).emitCrewTerminatedOutcome;
+				const readCrewAddRequestReplay = (storage as {
+					readCrewAddRequestReplay?: (roomDir: string, requestId: string) => Promise<any>;
+				}).readCrewAddRequestReplay;
+				expect(emitCrewTerminatedOutcome).toBeTypeOf("function");
+
+				await createSpawningMember(created.roomDir, {
+					name: "dedupe-worker",
+					displayName: "dedupe-worker",
+					type: "worker",
+					backend: "pi",
+					taskId: "spawn-request-terminal-dedupe",
+					bootstrapToken: "dedupe-bootstrap-token",
+					requestReplay: {
+						requestId: "req-terminal-dedupe",
+						requestedName: "dedupe-worker",
+						type: "worker",
+						model: null,
+						task: null,
+						transient: false,
+						metadata: { source: "terminal-dedupe" },
+						activation: "immediate",
+						holdTimeoutMs: null,
+					},
+				} as never);
+				await markMemberJoined({
+					bootstrap: {
+						version: 1,
+						roomId: created.metadata.roomId,
+						roomDir: created.roomDir,
+						memberName: "dedupe-worker",
+						memberType: "worker",
+						ownerName: "owner",
+						ownerSessionId: created.metadata.ownerSessionId,
+						token: "dedupe-bootstrap-token",
+						spawnTaskId: "spawn-request-terminal-dedupe",
+					},
+					sessionId: "dedupe-worker-session",
+					runtimeId: String(process.pid),
+					backend: "pi",
+				});
+				await updateRoomMemberState(created.roomDir, "dedupe-worker", {
+					state: "error",
+					runtimeId: null,
+					sessionId: null,
+					spawnTaskId: null,
+				});
+
+				const first = await emitCrewTerminatedOutcome?.({
+					roomDir: created.roomDir,
+					requestId: "req-terminal-dedupe",
+					spawnTaskId: "spawn-request-terminal-dedupe",
+					memberName: "dedupe-worker",
+					reason: "session_shutdown",
+				});
+				const second = await emitCrewTerminatedOutcome?.({
+					roomDir: created.roomDir,
+					requestId: "req-terminal-dedupe",
+					spawnTaskId: "spawn-request-terminal-dedupe",
+					memberName: "dedupe-worker",
+					reason: "removed",
+				});
+
+				expect(first).toMatchObject({
+					event: "terminated",
+					request_id: "req-terminal-dedupe",
+					spawn_task_id: "spawn-request-terminal-dedupe",
+				});
+				expect(second).toBeNull();
+				expect(await readCrewAddRequestReplay?.(created.roomDir, "req-terminal-dedupe")).toMatchObject({
+					replay: {
+						event: "terminated",
+						reason: "session_shutdown",
+						delivery_state: "ended",
+					},
+				});
+			});
+		});
+
+		it("replays hold_expired abort outcomes for later add and abort retries", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-request-replay-expired-hold",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				const applyCrewControlCommand = (storage as {
+					applyCrewControlCommand?: (options: {
+						roomDir: string;
+						verb: "release" | "abort";
+						spawnTaskId: string;
+						commandId?: string;
+						requestId?: string;
+						reason?: string;
+					}) => Promise<any>;
+				}).applyCrewControlCommand;
+				expect(applyCrewControlCommand).toBeTypeOf("function");
+
+				await createSpawningMember(created.roomDir, {
+					name: "expired-hold-worker",
+					displayName: "expired-hold-worker",
+					type: "worker",
+					backend: "pi",
+					taskId: "spawn-request-expired-hold",
+					bootstrapToken: "expired-hold-bootstrap-token",
+					requestReplay: {
+						requestId: "req-expired-hold",
+						requestedName: "expired-hold-worker",
+						type: "worker",
+						model: null,
+						task: null,
+						transient: false,
+						metadata: { source: "expired-hold" },
+						activation: "manual",
+						holdTimeoutMs: 45_000,
+					},
+				} as never);
+				await markMemberJoined({
+					bootstrap: {
+						version: 1,
+						roomId: created.metadata.roomId,
+						roomDir: created.roomDir,
+						memberName: "expired-hold-worker",
+						memberType: "worker",
+						ownerName: "owner",
+						ownerSessionId: created.metadata.ownerSessionId,
+						token: "expired-hold-bootstrap-token",
+						spawnTaskId: "spawn-request-expired-hold",
+					},
+					sessionId: "expired-hold-worker-session",
+					runtimeId: String(process.pid),
+					backend: "pi",
+				});
+
+				const expired = await applyCrewControlCommand?.({
+					roomDir: created.roomDir,
+					verb: "abort",
+					spawnTaskId: "spawn-request-expired-hold",
+					requestId: "req-expired-hold",
+					reason: "hold_expired",
+				});
+				expect(expired).toMatchObject({
+					event: "aborted",
+					phase: "activation",
+					request_id: "req-expired-hold",
+					spawn_task_id: "spawn-request-expired-hold",
+					reason: "hold_expired",
+					delivery_state: "ended",
+				});
+
+				await fs.rm(getRoomMemberStatePath(created.roomDir, "expired-hold-worker"), { force: true });
+				await fs.rm(getRoomSpawnJobPath(created.roomDir, "spawn-request-expired-hold"), { force: true });
+
+				const replayedAdd = await queueCrewAdd(
+					{
+						request_id: "req-expired-hold",
+						name: "expired-hold-worker",
+						type: "worker",
+						activation: "manual",
+						hold_timeout_ms: 45_000,
+						metadata: { source: "retry-expired-hold" },
+					},
+					{
+						activeRoom: {
+							role: "owner",
+							roomDir: created.roomDir,
+							roomId: created.metadata.roomId,
+							memberName: "owner",
+							sessionId: created.metadata.ownerSessionId,
+						} as any,
+						sessionId: created.metadata.ownerSessionId,
+						ctx: {
+							cwd: tempDir,
+							hasUI: false,
+						} as any,
+						adapters: {
+							pi: {
+								kind: "pi",
+								async spawn() {
+									throw new Error("expired hold replay should not spawn");
+								},
+							},
+							paseo: {
+								kind: "paseo",
+								async spawn() {
+									throw new Error("expired hold replay should not spawn");
+								},
+							},
+						},
+					} as never,
+				);
+				expect(replayedAdd.replayed).toBe(true);
+				expect(replayedAdd.replayedLifecycleEvent).toMatchObject({
+					event: "aborted",
+					phase: "activation",
+					request_id: "req-expired-hold",
+					spawn_task_id: "spawn-request-expired-hold",
+					reason: "hold_expired",
+				});
+				expect(await loadRoomMemberState(created.roomDir, "expired-hold-worker").catch(() => null)).toBeNull();
+				expect(await readSpawnJob(created.roomDir, "spawn-request-expired-hold")).toBeNull();
+
+				const replayedAbort = await applyCrewControlCommand?.({
+					roomDir: created.roomDir,
+					verb: "abort",
+					spawnTaskId: "spawn-request-expired-hold",
+					commandId: "abort-after-expiry",
+					requestId: "req-expired-hold",
+				});
+				expect(replayedAbort).toMatchObject({
+					event: "aborted",
+					phase: "activation",
+					command_id: "abort-after-expiry",
+					reason: "hold_expired",
+					spawn_task_id: "spawn-request-expired-hold",
+				});
+			});
+		});
+
 		it("persists release control replay records and replays identical command_ids", async () => {
 			await withTempDir(async (tempDir) => {
 				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");

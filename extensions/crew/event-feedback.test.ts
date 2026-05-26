@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildCrewLifecycleEvent } from "./integration-events.ts";
+import { buildCrewLifecycleEvent, setCrewEventEmitter } from "./integration-events.ts";
 import { setActiveRoom, resetActiveRoomsForTests } from "./lifecycle.ts";
 import { activateBootstrapRoom } from "./lifecycle.ts";
 import {
@@ -10,6 +10,7 @@ import {
 	createSpawningMember,
 	markMemberJoined,
 	persistCrewAddReplayEvent,
+	readCrewAddRequestReplay,
 } from "./storage.ts";
 
 const { queueCrewAddMock } = vi.hoisted(() => ({
@@ -25,12 +26,14 @@ vi.mock("./tools.ts", async (importOriginal) => {
 });
 
 import roomExtension from "./index.ts";
+import { executeCrewRemove, executeCrewStop } from "./tools.ts";
 
 type RegisteredHandler = (event: unknown, ctx?: unknown) => unknown;
 
 function createHarness() {
 	const eventHandlers = new Map<string, RegisteredHandler>();
 	const lifecycleHandlers = new Map<string, RegisteredHandler>();
+	const tools = new Map<string, any>();
 	const emit = vi.fn(async () => undefined);
 
 	roomExtension(
@@ -44,7 +47,9 @@ function createHarness() {
 			on: vi.fn((name: string, handler: RegisteredHandler) => {
 				lifecycleHandlers.set(name, handler);
 			}),
-			registerTool: vi.fn(),
+			registerTool: vi.fn((tool: any) => {
+				tools.set(tool.name, tool);
+			}),
 			sendMessage: vi.fn(),
 			setActiveTools: vi.fn(),
 			getAllTools: vi.fn(() => []),
@@ -57,6 +62,33 @@ function createHarness() {
 		emit,
 		eventHandlers,
 		lifecycleHandlers,
+		async callTool(
+			name: string,
+			params: unknown,
+			ctxOverrides: Partial<{
+				cwd: string;
+				hasUI: boolean;
+				model: unknown;
+				getSystemPrompt: () => string;
+				sessionManager: { getSessionId: () => string };
+			}> = {},
+		) {
+			const tool = tools.get(name);
+			expect(tool).toBeTruthy();
+			return await tool.execute(
+				"tool-call-1",
+				params,
+				new AbortController().signal,
+				() => undefined,
+				{
+					cwd: "/home/thn/pi-crew",
+					hasUI: true,
+					getSystemPrompt: () => "",
+					sessionManager: { getSessionId: () => "owner-session" },
+					...ctxOverrides,
+				},
+			);
+		},
 	};
 }
 
@@ -146,6 +178,51 @@ async function seedHeldManualGeneration(roomDir: string, ownerSessionId: string,
 		},
 		sessionId: "held-worker-session",
 		runtimeId: "held-worker-runtime",
+		backend: "pi",
+	});
+}
+
+async function seedImmediateGeneration(options: {
+	roomDir: string;
+	roomId: string;
+	ownerSessionId: string;
+	memberName: string;
+	taskId: string;
+	requestId: string;
+}) {
+	await createSpawningMember(options.roomDir, {
+		name: options.memberName,
+		displayName: options.memberName,
+		type: "worker",
+		backend: "pi",
+		taskId: options.taskId,
+		bootstrapToken: `bootstrap-${options.taskId}`,
+		requestReplay: {
+			requestId: options.requestId,
+			requestedName: options.memberName,
+			type: "worker",
+			model: null,
+			task: null,
+			transient: false,
+			metadata: { source: "event-feedback-terminal" },
+			activation: "immediate",
+			holdTimeoutMs: null,
+		},
+	} as never);
+	await markMemberJoined({
+		bootstrap: {
+			version: 1,
+			roomId: options.roomId,
+			roomDir: options.roomDir,
+			memberName: options.memberName,
+			memberType: "worker",
+			ownerName: "owner",
+			ownerSessionId: options.ownerSessionId,
+			token: `bootstrap-${options.taskId}`,
+			spawnTaskId: options.taskId,
+		},
+		sessionId: `${options.memberName}-session`,
+		runtimeId: String(process.pid),
 		backend: "pi",
 	});
 }
@@ -828,4 +905,464 @@ describe("crew:add request feedback", () => {
 				);
 			});
 		});
+
+	it("replays hold_expired aborted outcomes for later crew:abort retries", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-expiry-replay",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				await seedHeldManualGeneration(
+					created.roomDir,
+					created.metadata.ownerSessionId,
+					created.metadata.roomId,
+				);
+				await persistCrewAddReplayEvent({
+					roomDir: created.roomDir,
+					requestId: "req-held-manual",
+					event: buildCrewLifecycleEvent({
+						event: "aborted",
+						phase: "activation",
+						request_id: "req-held-manual",
+						command_id: null,
+						requested_name: "held-worker",
+						member_target: "held-worker",
+						member_type: "worker",
+						room_id: created.metadata.roomId,
+						spawn_task_id: "spawn-held-manual",
+						runtime_id: null,
+						activation: "manual",
+						metadata: { source: "event-feedback-control" },
+						delivery_state: "ended",
+						hold_expires_at: null,
+						error: null,
+						reason: "hold_expired",
+					}),
+				});
+
+				const harness = createHarness();
+				setOwnerRoom({
+					sessionId: created.metadata.ownerSessionId,
+					roomDir: created.roomDir,
+					roomId: created.metadata.roomId,
+					memberName: "owner",
+				});
+
+				const abortHandler = harness.eventHandlers.get("crew:abort");
+				expect(abortHandler).toBeTypeOf("function");
+				abortHandler?.({
+					spawn_task_id: "spawn-held-manual",
+					command_id: "abort-after-expiry",
+					request_id: "req-held-manual",
+				});
+				await flushAsyncWork(25);
+
+				expect(crewEventPayloads(harness.emit)).toContainEqual(
+					expect.objectContaining({
+						event: "aborted",
+						phase: "activation",
+						command_id: "abort-after-expiry",
+						request_id: "req-held-manual",
+						spawn_task_id: "spawn-held-manual",
+						reason: "hold_expired",
+					}),
+				);
+			});
+		});
+
+	it("emits activation-phase failed when crew:release targets a terminated generation", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-terminated-control",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				await seedImmediateGeneration({
+					roomDir: created.roomDir,
+					roomId: created.metadata.roomId,
+					ownerSessionId: created.metadata.ownerSessionId,
+					memberName: "terminated-control-worker",
+					taskId: "spawn-terminated-control",
+					requestId: "req-terminated-control",
+				});
+				await persistCrewAddReplayEvent({
+					roomDir: created.roomDir,
+					requestId: "req-terminated-control",
+					event: buildCrewLifecycleEvent({
+						event: "terminated",
+						phase: "delivery",
+						request_id: "req-terminated-control",
+						command_id: null,
+						requested_name: "terminated-control-worker",
+						member_target: "terminated-control-worker",
+						member_type: "worker",
+						room_id: created.metadata.roomId,
+						spawn_task_id: "spawn-terminated-control",
+						runtime_id: null,
+						activation: "immediate",
+						metadata: { source: "event-feedback-terminal" },
+						delivery_state: "ended",
+						hold_expires_at: null,
+						error: null,
+						reason: "removed",
+					}),
+				});
+
+				const harness = createHarness();
+				setOwnerRoom({
+					sessionId: created.metadata.ownerSessionId,
+					roomDir: created.roomDir,
+					roomId: created.metadata.roomId,
+					memberName: "owner",
+				});
+
+				const releaseHandler = harness.eventHandlers.get("crew:release");
+				expect(releaseHandler).toBeTypeOf("function");
+				releaseHandler?.({
+					spawn_task_id: "spawn-terminated-control",
+					command_id: "release-after-terminated",
+					request_id: "req-terminated-control",
+				});
+				await flushAsyncWork(25);
+
+				expect(crewEventPayloads(harness.emit)).toContainEqual(
+					expect.objectContaining({
+						event: "failed",
+						phase: "activation",
+						command_id: "release-after-terminated",
+						request_id: "req-terminated-control",
+						spawn_task_id: "spawn-terminated-control",
+						reason: "invalid-activation-state",
+					}),
+				);
+			});
+		});
+
+	it("emits terminated when crew_remove destroys the active generation", async () => {
+		await withTempDir(async (tempDir) => {
+			const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+			const created = await createRoom({
+				runtimeRoot,
+				ownerName: "owner",
+				ownerSessionId: "owner-session-remove-terminal",
+				cwd: tempDir,
+				ownerPid: process.pid,
+			});
+			await seedImmediateGeneration({
+				roomDir: created.roomDir,
+				roomId: created.metadata.roomId,
+				ownerSessionId: created.metadata.ownerSessionId,
+				memberName: "remove-worker",
+				taskId: "spawn-remove-terminal",
+				requestId: "req-remove-terminal",
+			});
+
+			const emit = vi.fn(async () => undefined);
+			setCrewEventEmitter(emit);
+			setOwnerRoom({
+				sessionId: created.metadata.ownerSessionId,
+				roomDir: created.roomDir,
+				roomId: created.metadata.roomId,
+				memberName: "owner",
+			});
+			try {
+				await executeCrewRemove(
+					{ name: "remove-worker" },
+					{
+						events: { emit: vi.fn(async () => undefined) },
+						sendMessage: vi.fn(),
+						getThinkingLevel: vi.fn(),
+					} as any,
+					{
+						cwd: tempDir,
+						hasUI: true,
+						sessionManager: {
+							getSessionId: () => created.metadata.ownerSessionId,
+						},
+					} as any,
+					runtimeRoot,
+					{
+						pi: { kind: "pi", async spawn() { throw new Error("not used"); } },
+						paseo: { kind: "paseo", async spawn() { throw new Error("not used"); } },
+					} as any,
+					{ ownerName: "owner" },
+				);
+				await flushAsyncWork(25);
+			} finally {
+				setCrewEventEmitter(null);
+			}
+
+			const payloads = emit.mock.calls.map(([payload]) => payload as Record<string, unknown>);
+			expect(payloads).toContainEqual(
+				expect.objectContaining({
+					event: "terminated",
+					phase: "delivery",
+					request_id: "req-remove-terminal",
+					member_target: "remove-worker",
+					spawn_task_id: "spawn-remove-terminal",
+					delivery_state: "ended",
+					reason: "removed",
+				}),
+			);
+		});
+	});
+
+	it("emits terminated when crew_stop transient removal destroys the active generation", async () => {
+		await withTempDir(async (tempDir) => {
+			const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+			const created = await createRoom({
+				runtimeRoot,
+				ownerName: "owner",
+				ownerSessionId: "owner-session-stop-terminal",
+				cwd: tempDir,
+				ownerPid: process.pid,
+			});
+			await createSpawningMember(created.roomDir, {
+				name: "stop-transient-worker",
+				displayName: "stop-transient-worker",
+				type: "worker",
+				backend: "pi",
+				taskId: "spawn-stop-terminal",
+				transient: true,
+				bootstrapToken: "bootstrap-stop-terminal",
+				requestReplay: {
+					requestId: "req-stop-terminal",
+					requestedName: "stop-transient-worker",
+					type: "worker",
+					model: null,
+					task: "Stop this transient worker",
+					transient: true,
+					metadata: { source: "event-feedback-terminal" },
+					activation: "immediate",
+					holdTimeoutMs: null,
+				},
+			} as never);
+			await markMemberJoined({
+				bootstrap: {
+					version: 1,
+					roomId: created.metadata.roomId,
+					roomDir: created.roomDir,
+					memberName: "stop-transient-worker",
+					memberType: "worker",
+					ownerName: "owner",
+					ownerSessionId: created.metadata.ownerSessionId,
+					token: "bootstrap-stop-terminal",
+					spawnTaskId: "spawn-stop-terminal",
+				},
+				sessionId: "stop-transient-worker-session",
+				runtimeId: String(process.pid),
+				backend: "pi",
+			});
+
+			const emit = vi.fn(async () => undefined);
+			setCrewEventEmitter(emit);
+			setOwnerRoom({
+				sessionId: created.metadata.ownerSessionId,
+				roomDir: created.roomDir,
+				roomId: created.metadata.roomId,
+				memberName: "owner",
+			});
+			try {
+				await executeCrewStop(
+					{ name: "stop-transient-worker" },
+					{
+						events: { emit: vi.fn(async () => undefined) },
+						sendMessage: vi.fn(),
+						getThinkingLevel: vi.fn(),
+					} as any,
+					{
+						cwd: tempDir,
+						hasUI: true,
+						sessionManager: {
+							getSessionId: () => created.metadata.ownerSessionId,
+						},
+					} as any,
+					runtimeRoot,
+					{
+						pi: { kind: "pi", async spawn() { throw new Error("not used"); } },
+						paseo: { kind: "paseo", async spawn() { throw new Error("not used"); } },
+					} as any,
+					{ ownerName: "owner" },
+				);
+				await flushAsyncWork(25);
+			} finally {
+				setCrewEventEmitter(null);
+			}
+
+			const payloads = emit.mock.calls.map(([payload]) => payload as Record<string, unknown>);
+			expect(payloads).toContainEqual(
+				expect.objectContaining({
+					event: "terminated",
+					phase: "delivery",
+					request_id: "req-stop-terminal",
+					member_target: "stop-transient-worker",
+					spawn_task_id: "spawn-stop-terminal",
+					delivery_state: "ended",
+					reason: "transient_removed",
+				}),
+			);
+		});
+	});
+
+	it("emits terminated when member session shutdown destroys the active generation", async () => {
+		await withTempDir(async (tempDir) => {
+			const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+			const created = await createRoom({
+				runtimeRoot,
+				ownerName: "owner",
+				ownerSessionId: "owner-session-terminal-dedupe",
+				cwd: tempDir,
+				ownerPid: process.pid,
+			});
+			await seedImmediateGeneration({
+				roomDir: created.roomDir,
+				roomId: created.metadata.roomId,
+				ownerSessionId: created.metadata.ownerSessionId,
+				memberName: "dedupe-worker",
+				taskId: "spawn-terminal-dedupe",
+				requestId: "req-terminal-dedupe",
+			});
+
+			const harness = createHarness();
+			setActiveRoom({
+				role: "member",
+				roomDir: created.roomDir,
+				roomId: created.metadata.roomId,
+				memberName: "dedupe-worker",
+				sessionId: "dedupe-worker-session",
+				pollTimer: null,
+				heartbeatTimer: null,
+				pendingPoll: null,
+				pendingHeartbeat: null,
+				pendingToolTasks: new Set<Promise<unknown>>(),
+				shuttingDown: false,
+				pendingDeliveryBatch: [],
+				deliveryTimer: null,
+			} as any);
+
+			const shutdown = harness.lifecycleHandlers.get("session_shutdown");
+			expect(shutdown).toBeTypeOf("function");
+			await shutdown?.(
+				{},
+				{
+					cwd: tempDir,
+					getSystemPrompt: () => "",
+					sessionManager: {
+						getSessionId: () => "dedupe-worker-session",
+					},
+				},
+			);
+			await flushAsyncWork(25);
+
+			const terminalCalls = crewEventPayloads(harness.emit).filter(
+				(payload) =>
+					payload.event === "terminated"
+					&& payload.spawn_task_id === "spawn-terminal-dedupe",
+			);
+			expect(terminalCalls).toHaveLength(1);
+			expect(terminalCalls[0]).toMatchObject({
+				event: "terminated",
+				reason: "session_shutdown",
+				request_id: "req-terminal-dedupe",
+			});
+		});
+	});
+
+	it("re-emits the persisted terminated outcome when member session shutdown sees an ended generation", async () => {
+		await withTempDir(async (tempDir) => {
+			const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+			const created = await createRoom({
+				runtimeRoot,
+				ownerName: "owner",
+				ownerSessionId: "owner-session-terminal-replay",
+				cwd: tempDir,
+				ownerPid: process.pid,
+			});
+			await seedImmediateGeneration({
+				roomDir: created.roomDir,
+				roomId: created.metadata.roomId,
+				ownerSessionId: created.metadata.ownerSessionId,
+				memberName: "terminal-replay-worker",
+				taskId: "spawn-terminal-replay",
+				requestId: "req-terminal-replay",
+			});
+			await persistCrewAddReplayEvent({
+				roomDir: created.roomDir,
+				requestId: "req-terminal-replay",
+				event: buildCrewLifecycleEvent({
+					event: "terminated",
+					phase: "delivery",
+					request_id: "req-terminal-replay",
+					command_id: null,
+					requested_name: "terminal-replay-worker",
+					member_target: "terminal-replay-worker",
+					member_type: "worker",
+					room_id: created.metadata.roomId,
+					spawn_task_id: "spawn-terminal-replay",
+					runtime_id: null,
+					activation: "immediate",
+					metadata: { source: "event-feedback-terminal" },
+					delivery_state: "ended",
+					hold_expires_at: null,
+					error: null,
+					reason: "removed",
+				}),
+			});
+			const persistedReplay = await readCrewAddRequestReplay(
+				created.roomDir,
+				"req-terminal-replay",
+			);
+			expect(persistedReplay?.replay?.event).toBe("terminated");
+
+			const harness = createHarness();
+			setActiveRoom({
+				role: "member",
+				roomDir: created.roomDir,
+				roomId: created.metadata.roomId,
+				memberName: "terminal-replay-worker",
+				sessionId: "terminal-replay-worker-session",
+				pollTimer: null,
+				heartbeatTimer: null,
+				pendingPoll: null,
+				pendingHeartbeat: null,
+				pendingToolTasks: new Set<Promise<unknown>>(),
+				shuttingDown: false,
+				pendingDeliveryBatch: [],
+				deliveryTimer: null,
+			} as any);
+
+			const shutdown = harness.lifecycleHandlers.get("session_shutdown");
+			expect(shutdown).toBeTypeOf("function");
+			await shutdown?.(
+				{},
+				{
+					cwd: tempDir,
+					getSystemPrompt: () => "",
+					sessionManager: {
+						getSessionId: () => "terminal-replay-worker-session",
+					},
+				},
+			);
+			await flushAsyncWork(25);
+
+			const terminalCalls = crewEventPayloads(harness.emit).filter(
+				(payload) =>
+					payload.event === "terminated"
+					&& payload.spawn_task_id === "spawn-terminal-replay",
+			);
+			expect(terminalCalls).toHaveLength(1);
+			expect(terminalCalls[0]).toMatchObject({
+				event: "terminated",
+				reason: "removed",
+				request_id: "req-terminal-replay",
+			});
+		});
+	});
 	});

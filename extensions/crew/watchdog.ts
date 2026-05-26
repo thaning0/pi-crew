@@ -17,6 +17,7 @@ import {
 	readMemberHeartbeat,
 	readMessage,
 	readSpawnJob,
+	reconcileExpiredHeldCrewAddRequests,
 	transitionSpawnJobRecord,
 	updateRoomMemberState,
 	withSerializedOwnerRoomMutation,
@@ -24,6 +25,7 @@ import {
 	writeJsonAtomic,
 	writeRoomMemberState,
 	writeRoomMetadata,
+	emitCrewTerminatedOutcome,
 } from "./storage.ts";
 import type { MemberLivenessObservation, RoomMemberState, RoomSpawnAdapter, RoomSpawnJob } from "./types.ts";
 import { loadTypedRoomAgentDefinition } from "./bootstrap.ts";
@@ -635,6 +637,9 @@ export async function reconcileMemberLiveness(
 	options: WatchdogOptions = {},
 ): Promise<void> {
 	const log = createRoomLogger(roomDir, "watchdog");
+	await reconcileExpiredHeldCrewAddRequests(roomDir).catch((err) =>
+		log.error("expired held reconciliation failed", { error: String(err) }),
+	);
 	const members = await listRoomMembers(roomDir).catch(() => []);
 	let jobsPendingExternalCleanup = 0;
 	try {
@@ -835,6 +840,18 @@ export async function reconcileMemberLiveness(
 		if (!reconciled || !cleanupOk) continue;
 
 		if (reconciled.state === "removed") {
+			await emitCrewTerminatedOutcome({
+				roomDir,
+				requestId: reconciled.requestId ?? undefined,
+				spawnTaskId: reconciled.spawnTaskId ?? undefined,
+				memberName: reconciled.name,
+				reason: "watchdog_cleanup",
+			}).catch((err) =>
+				log.error("watchdog terminal emit failed", {
+					memberName: reconciled.name,
+					error: String(err),
+				}),
+			);
 			if (reconciled.worktree?.path) {
 				const metadata = await loadRoomMetadata(roomDir).catch(() => null);
 				const cwd = metadata?.cwd ?? process.cwd();
@@ -913,6 +930,18 @@ export async function reconcileMemberLiveness(
 			updatedAt: new Date().toISOString(),
 		}).catch((err) => log.error("mark error failed",
 			{ memberName: reconciled.name, error: String(err) }));
+		await emitCrewTerminatedOutcome({
+			roomDir,
+			requestId: reconciled.requestId ?? undefined,
+			spawnTaskId: reconciled.spawnTaskId ?? undefined,
+			memberName: reconciled.name,
+			reason: "watchdog_cleanup",
+		}).catch((err) =>
+			log.error("watchdog terminal emit failed", {
+				memberName: reconciled.name,
+				error: String(err),
+			}),
+		);
 	}
 
 	// Prune orphaned worktrees (crash recovery, best-effort).
@@ -1007,6 +1036,21 @@ export async function reapRoom(roomDir: string, adapters: RoomAdapterMap): Promi
 				await writeRoomMetadata(roomDir, { ...currentMetadata, state: "orphaned" }).catch((err) => log.error("write orphaned metadata failed", { roomId: metadata.roomId, error: String(err) }));
 			});
 			return;
+		}
+
+		for (const member of snapshot.members) {
+			await emitCrewTerminatedOutcome({
+				roomDir,
+				requestId: member.requestId ?? undefined,
+				spawnTaskId: member.spawnTaskId ?? undefined,
+				memberName: member.name,
+				reason: "watchdog_cleanup",
+			}).catch((err) =>
+				log.error("stale room terminal emit failed", {
+					memberName: member.name,
+					error: String(err),
+				}),
+			);
 		}
 
 		let stillStale = false;

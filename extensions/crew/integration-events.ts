@@ -5,6 +5,7 @@ export type CrewDeliveryState = "pending" | "held" | "enabled" | "ended";
 export type CrewLifecyclePhase = "request" | "spawn" | "delivery" | "activation";
 export type CrewLifecycleEventName =
 	| CrewDeliveryState
+	| "terminated"
 	| "activated"
 	| "aborted"
 	| "claimed"
@@ -161,6 +162,12 @@ export function createCrewEndedLifecycleEvent(
 	seed: CrewLifecycleEventSeed,
 ): CrewLifecycleEventInput {
 	return createCrewLifecycleEvent(seed, "ended", "delivery", "ended");
+}
+
+export function createCrewTerminatedLifecycleEvent(
+	seed: CrewLifecycleEventSeed,
+): CrewLifecycleEventInput {
+	return createCrewLifecycleEvent(seed, "terminated", "delivery", "ended");
 }
 
 export function createCrewRejectedLifecycleEvent(

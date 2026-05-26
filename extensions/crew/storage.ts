@@ -8,7 +8,11 @@ import {
 } from "./dispatch.ts";
 import { withFileLock, type FileLockOptions } from "./lock.ts";
 import { createRoomLogger } from "./logger.ts";
-import { buildCrewLifecycleEvent } from "./integration-events.ts";
+import {
+	buildCrewLifecycleEvent,
+	createCrewTerminatedLifecycleEvent,
+	emitCrewLifecycleEvent,
+} from "./integration-events.ts";
 import type {
 	CrewAddActivation,
 	CrewAddReplayDeliveryGate,
@@ -1016,7 +1020,7 @@ function crewAddReplayMatches(record: CrewAddReplayRecord, seed: CrewAddReplaySe
 		&& normalizedRecord.hold_timeout_ms === normalized.hold_timeout_ms;
 }
 
-function deriveCrewAddReplayReason(member: RoomMemberState | null, job: RoomSpawnJob | null): string | null {
+function deriveCrewAddReplayReason(_member: RoomMemberState | null, job: RoomSpawnJob | null): string | null {
 	switch (job?.state) {
 		case "failed":
 			return "spawn-failed";
@@ -1028,15 +1032,6 @@ function deriveCrewAddReplayReason(member: RoomMemberState | null, job: RoomSpaw
 			return "spawn-timeout-claim";
 		default:
 			break;
-	}
-	if (member?.state === "removed") {
-		return "member-removed";
-	}
-	if (member?.state === "stopping") {
-		return "member-stopping";
-	}
-	if (member?.state === "error") {
-		return "member-error";
 	}
 	return null;
 }
@@ -1151,6 +1146,12 @@ function buildCrewAddReplayLifecycleSnapshot(options: {
 		&& (previous.event === "activated" || previous.event === "aborted")
 			? previous
 			: null;
+	const preservedTerminalEvent =
+		previous
+		&& previous.phase === "delivery"
+		&& previous.event === "terminated"
+			? previous
+			: null;
 	const previousDelivery = normalizeReplayDeliveryGate(previous?.delivery, {
 		activation: previous?.activation ?? options.record.activation,
 		delivery_state: previous?.delivery_state ?? null,
@@ -1162,6 +1163,7 @@ function buildCrewAddReplayLifecycleSnapshot(options: {
 		preservedSpawnEvent
 		?? preservedClaimEvent
 		?? preservedActivationEvent
+		?? preservedTerminalEvent
 		?? derivedEvent
 		?? previous
 		?? null;
@@ -1178,6 +1180,7 @@ function buildCrewAddReplayLifecycleSnapshot(options: {
 			preservedSpawnEvent?.event_id
 			?? preservedClaimEvent?.event_id
 			?? preservedActivationEvent?.event_id
+			?? preservedTerminalEvent?.event_id
 			?? derivedEvent?.event_id
 			?? previous?.event_id
 			?? null,
@@ -1185,6 +1188,7 @@ function buildCrewAddReplayLifecycleSnapshot(options: {
 			preservedSpawnEvent?.event
 			?? preservedClaimEvent?.event
 			?? preservedActivationEvent?.event
+			?? preservedTerminalEvent?.event
 			?? derivedEvent?.event
 			?? previous?.event
 			?? null,
@@ -1192,6 +1196,7 @@ function buildCrewAddReplayLifecycleSnapshot(options: {
 			preservedSpawnEvent?.phase
 			?? preservedClaimEvent?.phase
 			?? preservedActivationEvent?.phase
+			?? preservedTerminalEvent?.phase
 			?? derivedEvent?.phase
 			?? previous?.phase
 			?? null,
@@ -1200,6 +1205,7 @@ function buildCrewAddReplayLifecycleSnapshot(options: {
 			preservedSpawnEvent?.command_id
 			?? preservedClaimEvent?.command_id
 			?? preservedActivationEvent?.command_id
+			?? preservedTerminalEvent?.command_id
 			?? derivedEvent?.command_id
 			?? previous?.command_id
 			?? null,
@@ -1208,6 +1214,7 @@ function buildCrewAddReplayLifecycleSnapshot(options: {
 			preservedSpawnEvent?.member_target
 			?? preservedClaimEvent?.member_target
 			?? preservedActivationEvent?.member_target
+			?? preservedTerminalEvent?.member_target
 			?? derivedEvent?.member_target
 			?? options.member?.name
 			?? options.record.member_name,
@@ -1215,12 +1222,14 @@ function buildCrewAddReplayLifecycleSnapshot(options: {
 			preservedSpawnEvent?.member_type
 			?? preservedClaimEvent?.member_type
 			?? preservedActivationEvent?.member_type
+			?? preservedTerminalEvent?.member_type
 			?? derivedEvent?.member_type
 			?? options.record.material.type,
 		room_id:
 			preservedSpawnEvent?.room_id
 			?? preservedClaimEvent?.room_id
 			?? preservedActivationEvent?.room_id
+			?? preservedTerminalEvent?.room_id
 			?? derivedEvent?.room_id
 			?? previous?.room_id
 			?? null,
@@ -1229,6 +1238,7 @@ function buildCrewAddReplayLifecycleSnapshot(options: {
 			preservedSpawnEvent?.runtime_id
 			?? preservedClaimEvent?.runtime_id
 			?? preservedActivationEvent?.runtime_id
+			?? preservedTerminalEvent?.runtime_id
 			?? derivedEvent?.runtime_id
 			?? options.member?.runtimeId
 			?? options.job?.runtimeId
@@ -1239,6 +1249,7 @@ function buildCrewAddReplayLifecycleSnapshot(options: {
 			preservedSpawnEvent?.metadata
 			?? preservedClaimEvent?.metadata
 			?? preservedActivationEvent?.metadata
+			?? preservedTerminalEvent?.metadata
 			?? derivedEvent?.metadata
 			?? options.record.metadata
 			?? previous?.metadata
@@ -1250,6 +1261,7 @@ function buildCrewAddReplayLifecycleSnapshot(options: {
 			preservedSpawnEvent?.error
 			?? preservedClaimEvent?.error
 			?? preservedActivationEvent?.error
+			?? preservedTerminalEvent?.error
 			?? derivedEvent?.error
 			?? options.job?.error
 			?? options.member?.lastError
@@ -1258,6 +1270,7 @@ function buildCrewAddReplayLifecycleSnapshot(options: {
 			preservedSpawnEvent?.reason
 			?? preservedClaimEvent?.reason
 			?? preservedActivationEvent?.reason
+			?? preservedTerminalEvent?.reason
 			?? derivedEvent?.reason
 			?? previous?.reason
 			?? null,
@@ -1362,7 +1375,7 @@ function buildCrewAddReplayRecord(options: {
 
 function isCrewAddReplayClearlyTerminal(record: CrewAddReplayRecord): boolean {
 	const replay = record.replay;
-	if (!replay || (replay.event !== "ended" && replay.event !== "aborted")) {
+	if (!replay || (replay.event !== "ended" && replay.event !== "terminated" && replay.event !== "aborted")) {
 		return false;
 	}
 	if (
@@ -1561,6 +1574,53 @@ async function findCrewAddReplayForControl(options: {
 	return records.find((record) => record.spawn_task_id === options.spawnTaskId) ?? null;
 }
 
+async function findCrewAddReplayForGenerationLocked(options: {
+	roomDir: string;
+	requestId?: string | null;
+	spawnTaskId?: string | null;
+	memberName?: string | null;
+}): Promise<CrewAddReplayRecord | null> {
+	if (options.requestId) {
+		const direct = await readCrewAddRequestReplay(options.roomDir, options.requestId);
+		if (direct) {
+			return direct;
+		}
+	}
+	if (!options.spawnTaskId) {
+		return null;
+	}
+	const records = await listCrewAddRequestReplays(options.roomDir);
+	return records.find((record) => record.spawn_task_id === options.spawnTaskId) ?? null;
+}
+
+function buildCrewTerminatedEvent(options: {
+	record: CrewAddReplayRecord | null;
+	member: RoomMemberState | null;
+	job: RoomSpawnJob | null;
+	roomId: string | null;
+	requestId?: string | null;
+	spawnTaskId?: string | null;
+	memberName?: string | null;
+	reason: string;
+}): CrewAddReplayableEvent {
+	const record = options.record;
+	return buildCrewLifecycleEvent(
+		createCrewTerminatedLifecycleEvent({
+			request_id: record?.request_id ?? options.requestId ?? null,
+			command_id: null,
+			requested_name: record?.material.requested_name ?? options.member?.displayName ?? options.memberName ?? null,
+			member_target: options.member?.name ?? record?.member_name ?? options.memberName ?? null,
+			member_type: record?.material.type ?? options.member?.type ?? null,
+			room_id: record?.replay?.room_id ?? options.roomId,
+			spawn_task_id: options.spawnTaskId ?? record?.spawn_task_id ?? options.job?.taskId ?? null,
+			runtime_id: options.member?.runtimeId ?? options.job?.runtimeId ?? record?.replay?.runtime_id ?? null,
+			activation: record?.activation ?? null,
+			metadata: record?.metadata ?? null,
+			reason: options.reason,
+		}),
+	);
+}
+
 function buildCrewControlFailedEvent(options: {
 	record: CrewAddReplayRecord | null;
 	verb: CrewControlVerb;
@@ -1753,6 +1813,27 @@ export async function applyCrewControlCommand(options: {
 			});
 			return replayedOutcome;
 		}
+		if (record.replay?.event === "terminated") {
+			const failed = buildCrewControlFailedEvent({
+				record,
+				verb: options.verb,
+				spawnTaskId: options.spawnTaskId,
+				commandId: options.commandId,
+				requestId: options.requestId ?? record.request_id,
+				error: `crew:${options.verb} cannot target a terminated generation.`,
+				reason: "invalid-activation-state",
+			});
+			await persistCrewControlReplayRecord({
+				roomDir: options.roomDir,
+				verb: options.verb,
+				spawnTaskId: options.spawnTaskId,
+				commandId: options.commandId,
+				requestId: record.request_id,
+				outcome: failed,
+				updatedAt,
+			});
+			return failed;
+		}
 		let member = await loadRoomMemberState(options.roomDir, record.member_name).catch(() => null);
 		let job = await readSpawnJob(options.roomDir, record.spawn_task_id).catch(() => null);
 		if (!member || !job) {
@@ -1828,6 +1909,7 @@ export async function applyCrewControlCommand(options: {
 				spawnBatchId: null,
 				currentTask: null,
 				currentTaskMessageId: null,
+				runtimeId: null,
 				sessionId: null,
 				queuedDeliveryMessageIds: null,
 				queuedTaskMessageIds: null,
@@ -2002,6 +2084,99 @@ export async function persistCrewAddReplayEvent(options: {
 	await withRoomMutationLock(options.roomDir, async () => {
 		await persistCrewAddReplayEventLocked(options);
 	});
+}
+
+async function emitCrewTerminatedOutcomeLocked(options: {
+	roomDir: string;
+	requestId?: string | null;
+	spawnTaskId?: string | null;
+	memberName?: string | null;
+	reason: string;
+	updatedAt?: string;
+}): Promise<CrewAddReplayableEvent | null> {
+	const record = await findCrewAddReplayForGenerationLocked(options);
+	if (!record) {
+		return null;
+	}
+	if (
+		record.replay?.event === "terminated"
+		|| record.replay?.event === "aborted"
+		|| record.replay?.delivery_state === "ended"
+	) {
+		return null;
+	}
+	const member = await loadRoomMemberState(options.roomDir, record.member_name).catch(() => null);
+	const spawnTaskId = options.spawnTaskId ?? record.spawn_task_id ?? null;
+	const job = spawnTaskId
+		? await readSpawnJob(options.roomDir, spawnTaskId).catch(() => null)
+		: null;
+	const roomId = record.replay?.room_id
+		?? await loadRoomMetadata(options.roomDir).then((metadata) => metadata.roomId).catch(() => null);
+	const event = buildCrewTerminatedEvent({
+		record,
+		member,
+		job,
+		roomId,
+		requestId: options.requestId,
+		spawnTaskId,
+		memberName: options.memberName,
+		reason: options.reason,
+	});
+	await persistCrewAddReplayEventLocked({
+		roomDir: options.roomDir,
+		requestId: record.request_id,
+		event,
+		member,
+		job,
+		updatedAt: options.updatedAt,
+	});
+	await emitCrewLifecycleEvent(event);
+	return event;
+}
+
+export async function emitCrewTerminatedOutcome(options: {
+	roomDir: string;
+	requestId?: string | null;
+	spawnTaskId?: string | null;
+	memberName?: string | null;
+	reason: string;
+	updatedAt?: string;
+}): Promise<CrewAddReplayableEvent | null> {
+	return await withRoomMutationLock(options.roomDir, async () =>
+		await emitCrewTerminatedOutcomeLocked(options));
+}
+
+export async function reconcileExpiredHeldCrewAddRequests(
+	roomDir: string,
+): Promise<CrewAddReplayableEvent[]> {
+	const records = await listCrewAddRequestReplays(roomDir);
+	const expired = records.filter((record) => {
+		const delivery = record.replay?.delivery;
+		if (!delivery || delivery.state !== "held" || !delivery.hold_expires_at) {
+			return false;
+		}
+		const expiresAt = Date.parse(delivery.hold_expires_at);
+		return Number.isFinite(expiresAt) && expiresAt <= Date.now();
+	});
+	const outcomes: CrewAddReplayableEvent[] = [];
+	for (const record of expired) {
+		const latest = await readCrewAddRequestReplay(roomDir, record.request_id);
+		if (latest?.replay?.delivery?.state !== "held") {
+			continue;
+		}
+		const outcome = await applyCrewControlCommand({
+			roomDir,
+			verb: "abort",
+			spawnTaskId: latest.spawn_task_id,
+			requestId: latest.request_id,
+			reason: "hold_expired",
+		});
+		if (outcome.event === "aborted" && outcome.reason === "hold_expired") {
+			await emitCrewLifecycleEvent(outcome);
+			outcomes.push(outcome);
+		}
+	}
+	return outcomes;
 }
 
 export async function writeRoomMemberState(roomDir: string, member: RoomMemberState): Promise<void> {

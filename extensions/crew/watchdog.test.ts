@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import roomExtension from "./index.ts";
 import { withFileLock } from "./lock.ts";
 import {
@@ -22,6 +22,7 @@ import {
 	loadRoomMetadata,
 	loadRoomMemberState,
 	markMemberJoined,
+	persistCrewAddReplayEvent,
 	readMemberHeartbeat,
 	readSpawnJob,
 	updateRoomMemberState,
@@ -31,6 +32,7 @@ import {
 	writeRoomMemberState,
 } from "./storage.ts";
 import { handleStaleOwnerForMember, reapRoom, reapStaleRooms, reconcileMemberLiveness, reconcileSpawnTimeouts } from "./watchdog.ts";
+import { buildCrewLifecycleEvent, setCrewEventEmitter } from "./integration-events.ts";
 import type { RoomBackend, RoomMemberState, RoomSpawnAdapter } from "./types.ts";
 import { createWorktree, git, persistWorktreeSnapshot } from "./worktree.ts";
 
@@ -49,6 +51,12 @@ function createHarness(options: { cwd: string; sessionId: string; extensionOptio
 
 	(roomExtension as any)(
 		{
+			events: {
+				on() {},
+				async emit() {
+					return undefined;
+				},
+			},
 			on(eventName: string, handler: (event?: unknown, ctx?: unknown) => Promise<void> | void) {
 				const current = lifecycleListeners.get(eventName) ?? [];
 				current.push(handler);
@@ -1540,6 +1548,54 @@ async function createTestMember(roomDir: string, name: string, state: string, ba
 	});
 }
 
+async function seedReplayableJoinedMember(options: {
+	roomDir: string;
+	roomId: string;
+	ownerSessionId: string;
+	memberName: string;
+	taskId: string;
+	requestId: string;
+	activation?: "immediate" | "manual";
+	holdTimeoutMs?: number | null;
+}) {
+	const activation = options.activation ?? "immediate";
+	await createSpawningMember(options.roomDir, {
+		name: options.memberName,
+		displayName: options.memberName,
+		type: "worker",
+		backend: "pi",
+		taskId: options.taskId,
+		bootstrapToken: `bootstrap-${options.taskId}`,
+		requestReplay: {
+			requestId: options.requestId,
+			requestedName: options.memberName,
+			type: "worker",
+			model: null,
+			task: null,
+			transient: false,
+			metadata: { source: "watchdog-terminal" },
+			activation,
+			holdTimeoutMs: options.holdTimeoutMs ?? null,
+		},
+	} as never);
+	await markMemberJoined({
+		bootstrap: {
+			version: 1,
+			roomId: options.roomId,
+			roomDir: options.roomDir,
+			memberName: options.memberName,
+			memberType: "worker",
+			ownerName: "owner",
+			ownerSessionId: options.ownerSessionId,
+			token: `bootstrap-${options.taskId}`,
+			spawnTaskId: options.taskId,
+		},
+		sessionId: `${options.memberName}-session`,
+		runtimeId: String(process.pid),
+		backend: "pi",
+	});
+}
+
 function createPiAdapter(overrides?: Partial<RoomSpawnAdapter>): RoomSpawnAdapter {
 	return {
 		kind: "pi",
@@ -1716,6 +1772,135 @@ describe("stale room reaping", () => {
 			expect(await reapRoom(room.roomDir, adapters)).toBe(true);
 			expect(await exists(getOwnerIndexPathForTest(runtimeRoot, ownerSessionId))).toBe(false);
 			expect(await findRoomByOwnerSessionId(runtimeRoot, ownerSessionId)).toBeNull();
+		});
+	});
+
+	it("reapStaleRooms emits terminated when stale cleanup destroys an active generation", async () => {
+		await withTempDir(async (tempDir) => {
+			const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+			const room = await createRoom({
+				runtimeRoot,
+				ownerName: "owner",
+				ownerSessionId: "owner-session-stale-terminal",
+				cwd: tempDir,
+				ownerPid: 999_999,
+			});
+			await seedReplayableJoinedMember({
+				roomDir: room.roomDir,
+				roomId: room.metadata.roomId,
+				ownerSessionId: room.metadata.ownerSessionId,
+				memberName: "worker",
+				taskId: "spawn-stale-terminal",
+				requestId: "req-stale-terminal",
+			});
+			await writeJsonAtomic(getRoomHeartbeatPath(room.roomDir), {
+				roomId: room.metadata.roomId,
+				ownerSessionId: room.metadata.ownerSessionId,
+				ownerPid: room.metadata.ownerPid,
+				updatedAt: new Date(Date.now() - 60_000).toISOString(),
+			});
+
+			const emit = vi.fn(async () => undefined);
+			setCrewEventEmitter(emit);
+			try {
+				await reapStaleRooms(runtimeRoot, {
+					pi: createPiAdapter({
+						async remove() {
+							return;
+						},
+					}),
+					paseo: adapters.paseo,
+				}, { heartbeatStaleMs: 1_000 });
+			} finally {
+				setCrewEventEmitter(null);
+			}
+
+			const terminalPayloads = emit.mock.calls
+				.map(([payload]) => payload as Record<string, unknown>)
+				.filter((payload) => payload.event === "terminated");
+			expect(terminalPayloads).toHaveLength(1);
+			expect(terminalPayloads[0]).toMatchObject({
+				event: "terminated",
+				phase: "delivery",
+				request_id: "req-stale-terminal",
+				member_target: "worker",
+				spawn_task_id: "spawn-stale-terminal",
+				delivery_state: "ended",
+				reason: "watchdog_cleanup",
+			});
+		});
+	});
+});
+
+describe("held generation expiry", () => {
+	it("reconcileMemberLiveness aborts expired held generations without terminated", async () => {
+		const result = await createTestRoom();
+		const roomDir = result.roomDir;
+		const metadata = await loadRoomMetadata(roomDir);
+		await seedReplayableJoinedMember({
+			roomDir,
+			roomId: metadata.roomId,
+			ownerSessionId: metadata.ownerSessionId,
+			memberName: "held-expiry-worker",
+			taskId: "spawn-held-expiry",
+			requestId: "req-held-expiry",
+			activation: "manual",
+			holdTimeoutMs: 1,
+		});
+		const expiredAt = new Date(Date.now() - 5_000).toISOString();
+		await persistCrewAddReplayEvent({
+			roomDir,
+			requestId: "req-held-expiry",
+			event: buildCrewLifecycleEvent({
+				event: "claimed",
+				phase: "delivery",
+				request_id: "req-held-expiry",
+				command_id: null,
+				requested_name: "held-expiry-worker",
+				member_target: "held-expiry-worker",
+				member_type: "worker",
+				room_id: metadata.roomId,
+				spawn_task_id: "spawn-held-expiry",
+				runtime_id: String(process.pid),
+				activation: "manual",
+				metadata: { source: "watchdog-terminal" },
+				delivery_state: "held",
+				hold_expires_at: expiredAt,
+				error: null,
+				reason: null,
+			}),
+		});
+
+		const emit = vi.fn(async () => undefined);
+		setCrewEventEmitter(emit);
+		try {
+			await reconcileMemberLiveness(roomDir, { pi: createPiAdapter(), paseo: adapters.paseo }, {
+				memberHeartbeatStaleMs: 5_000,
+			});
+		} finally {
+			setCrewEventEmitter(null);
+		}
+
+		const payloads = emit.mock.calls.map(([payload]) => payload as Record<string, unknown>);
+		expect(payloads).toContainEqual(
+			expect.objectContaining({
+				event: "aborted",
+				phase: "activation",
+				request_id: "req-held-expiry",
+				spawn_task_id: "spawn-held-expiry",
+				reason: "hold_expired",
+				delivery_state: "ended",
+			}),
+		);
+		expect(
+			payloads.filter(
+				(payload) => payload.event === "terminated" && payload.spawn_task_id === "spawn-held-expiry",
+			),
+		).toHaveLength(0);
+		await expect(loadRoomMemberState(roomDir, "held-expiry-worker")).resolves.toMatchObject({
+			state: "removed",
+			sessionId: null,
+			runtimeId: null,
 		});
 	});
 });

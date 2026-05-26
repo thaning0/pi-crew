@@ -92,6 +92,7 @@ import {
 	createSpawningMember,
 	deleteRoomMemberState,
 	deleteRoomMemberStateFile,
+	emitCrewTerminatedOutcome,
 	finalizeMemberRuntime,
 	formatMemberLabel,
 	getMemberDisplayName,
@@ -1705,6 +1706,18 @@ export async function executeCrewStop(
 
 	// Write owner confirmation message
 	if (finalizedStop?.transientRemoved) {
+		await emitCrewTerminatedOutcome({
+			roomDir: activeRoom.roomDir,
+			requestId: member.requestId ?? undefined,
+			spawnTaskId: member.spawnTaskId ?? undefined,
+			memberName: member.name,
+			reason: "transient_removed",
+		}).catch((err) =>
+			log.error("failed to emit transient terminal outcome", {
+				memberName: member.name,
+				error: String(err),
+			}),
+		);
 		// Transient cleanup: worktree archival + board notification
 		if (member.worktree?.path) {
 			await archiveMemberWorktreeCleanup(activeRoom.roomDir, ctx.cwd, member).catch(() => {});
@@ -1882,6 +1895,18 @@ export async function executeCrewRemove(
 		});
 		return current.name;
 	});
+	await emitCrewTerminatedOutcome({
+		roomDir: activeRoom.roomDir,
+		requestId: member.requestId ?? undefined,
+		spawnTaskId: member.spawnTaskId ?? undefined,
+		memberName: member.name,
+		reason: "removed",
+	}).catch((err) =>
+		log.error("failed to emit remove terminal outcome", {
+			memberName: member.name,
+			error: String(err),
+		}),
+	);
 	return textResult(`Removed member ${removeLabel}.`);
 }
 

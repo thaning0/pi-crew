@@ -18,6 +18,7 @@ export type CrewReplayLifecycleEventName =
 	| "held"
 	| "enabled"
 	| "ended"
+	| "terminated"
 	| "activated"
 	| "aborted"
 	| "rejected"

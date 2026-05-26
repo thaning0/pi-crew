@@ -34,6 +34,7 @@ import {
   writeSpawnJob,
   updateSpawnJob,
   deleteRoomMemberState,
+  emitCrewTerminatedOutcome,
   loadRoomMemberState,
   writeRoomMemberState,
   formatMemberLabel,
@@ -476,6 +477,18 @@ export class MutationProxyServer {
           todoProgress: null,
           updatedAt: new Date().toISOString(),
         });
+        await emitCrewTerminatedOutcome({
+          roomDir: this.roomDir,
+          requestId: member.requestId ?? undefined,
+          spawnTaskId: member.spawnTaskId ?? undefined,
+          memberName,
+          reason: "transient_removed",
+        }).catch((err) =>
+          this.logger.error("failed to emit transient terminal outcome", {
+            memberName,
+            error: String(err),
+          }),
+        );
         // Board notification
         const memberLabel = formatMemberLabel(member);
         await appendMessage(this.roomDir, {
