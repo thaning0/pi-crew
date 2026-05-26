@@ -315,6 +315,13 @@ crew_merge { name: "worker", strategy: "ff-only" }
 
 ---
 
+## Paseo 兼容
+
+- 本插件 2.0.0 要求 Paseo >= 0.1.79 
+- 旧版本（1.x）兼容 Paseo <= 0.1.78
+
+---
+
 ## 许可
 
 MIT

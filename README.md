@@ -317,6 +317,12 @@ See docs for the full list (rarely needs adjustment — defaults cover the vast 
 
 ---
 
+## Paseo Compatibility
+- Version 2.0.0 of this plugin requires Paseo >= 0.1.79
+- Older versions (1.x) are compatible with Paseo <= 0.1.78
+
+---
+
 ## License
 
 MIT
