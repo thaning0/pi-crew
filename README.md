@@ -169,27 +169,59 @@ Both plugins are registered automatically on install — no configuration needed
 crew tools can be triggered **programmatically** via Pi's `pi.events` event bus — not just by the LLM. Other Pi extensions can spawn sub-agents or send messages through events without going through the model.
 
 ```typescript
-// In any Pi extension
+// Subscribe once to the public lifecycle stream.
+pi.events.on("crew:event", (payload) => {
+    console.log(payload.event, payload.event_id, payload.spawn_task_id);
+});
+
+// Immediate activation with request replay.
 pi.events.emit("crew:add", {
     name: "worker-01",
     type: "worker",
     task: "Implement the login module",
+    request_id: "login-worker-01",
 });
 
+// Manual activation with a hold lease.
+pi.events.emit("crew:add", {
+    name: "review-gate",
+    type: "worker",
+    activation: "manual",
+    hold_timeout_ms: 30_000,
+    request_id: "review-gate-01",
+    metadata: { ticket: "AUTH-42" },
+});
+
+// Follow-up routing still uses member_target via crew:tell.
 pi.events.emit("crew:tell", {
     to: "worker-01",
     summary: "Plan update",
     content: "Switch to JWT approach",
     kind: "info",
 });
+
+// Generation control uses spawn_task_id, with optional command replay.
+pi.events.emit("crew:release", {
+    spawn_task_id: "spawn-123",
+    command_id: "release-123",
+});
 ```
 
 | Event | Parameters | Description |
 |-------|-----------|-------------|
-| `crew:add` | `name`, `type`, `task?`, `model?`, `transient?` | Spawn a sub-agent (cwd auto-cached from session) |
+| `crew:add` | `name`, `type`, `task?`, `model?`, `transient?`, `request_id?`, `activation?`, `hold_timeout_ms?`, `metadata?` | Spawn a sub-agent with optional replay and controlled-activation hints |
 | `crew:tell` | `summary` (required), `to?`, `content?`, `kind?`, `broadcast?` | Send a message (kind defaults to `"info"`) |
+| `crew:release` | `spawn_task_id`, `command_id?`, `request_id?` | Open delivery for a held generation |
+| `crew:abort` | `spawn_task_id`, `command_id?`, `request_id?`, `reason?` | Discard a held generation before normal work starts |
+| `crew:event` | lifecycle payload with `event_id`, `event`, `member_target`, `spawn_task_id`, `request_id?`, `command_id?`, delivery metadata | Public lifecycle feedback stream for integrations |
 
 Errors are silent: invalid data or missing owner room are logged without throwing or blocking the event bus.
+
+- Subscribe to `crew:event` instead of reading room files or spawn-job state directly.
+- Use `member_target` for follow-up `crew:tell` routing; use `spawn_task_id` for generation-scoped `crew:release` / `crew:abort`.
+- Reuse the same `request_id` to replay the latest `crew:add` outcome, including known terminal outcomes.
+- Reuse the same `command_id` to replay the prior `crew:release` or `crew:abort` result for that generation.
+- Event delivery is best-effort; deduplicate with `event_id`.
 
 ---
 

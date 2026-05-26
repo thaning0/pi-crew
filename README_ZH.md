@@ -165,27 +165,59 @@ pi-crew 附带两个轻量插件，帮助子智能体更高效地协调工作：
 crew 的工具不仅可由 LLM 调用，还支持通过 Pi 的 `pi.events` 事件总线**程序化触发**。其他 Pi 扩展可通过事件来创建子智能体或发送消息，无需经过 LLM。
 
 ```typescript
-// 在任意 Pi 扩展中
+// 统一订阅公开生命周期反馈。
+pi.events.on("crew:event", (payload) => {
+    console.log(payload.event, payload.event_id, payload.spawn_task_id);
+});
+
+// 立即激活 + request_id 回放。
 pi.events.emit("crew:add", {
     name: "worker-01",
     type: "worker",
     task: "实现登录模块",
+    request_id: "login-worker-01",
 });
 
+// 手动激活 + 持有租约。
+pi.events.emit("crew:add", {
+    name: "review-gate",
+    type: "worker",
+    activation: "manual",
+    hold_timeout_ms: 30_000,
+    request_id: "review-gate-01",
+    metadata: { ticket: "AUTH-42" },
+});
+
+// 后续消息仍然通过 member_target + crew:tell 路由。
 pi.events.emit("crew:tell", {
     to: "worker-01",
     summary: "方案更新",
     content: "改用 JWT 方案",
     kind: "info",
 });
+
+// 代际控制使用 spawn_task_id，可选 command_id 做回放。
+pi.events.emit("crew:release", {
+    spawn_task_id: "spawn-123",
+    command_id: "release-123",
+});
 ```
 
 | 事件 | 参数 | 说明 |
 |------|------|------|
-| `crew:add` | `name`, `type`, `task?`, `model?`, `transient?` | 创建子智能体（cwd 自动从 session 缓存） |
+| `crew:add` | `name`, `type`, `task?`, `model?`, `transient?`, `request_id?`, `activation?`, `hold_timeout_ms?`, `metadata?` | 创建子智能体，并可附带回放与受控激活参数 |
 | `crew:tell` | `summary` (必填), `to?`, `content?`, `kind?`, `broadcast?` | 发送消息（kind 默认 `"info"`） |
+| `crew:release` | `spawn_task_id`, `command_id?`, `request_id?` | 打开 held 代际的正常投递 |
+| `crew:abort` | `spawn_task_id`, `command_id?`, `request_id?`, `reason?` | 在正常工作开始前丢弃 held 代际 |
+| `crew:event` | 包含 `event_id`, `event`, `member_target`, `spawn_task_id`, `request_id?`, `command_id?` 等字段的生命周期负载 | 面向集成方的公开生命周期反馈流 |
 
 错误静默处理：非法参数或无 owner room 时记录日志，不抛异常、不阻塞事件总线。
+
+- 对外集成应订阅 `crew:event`，而不是直接读取 room 文件或 spawn-job 状态。
+- `member_target` 用于后续 `crew:tell` 路由；`spawn_task_id` 用于 `crew:release` / `crew:abort` 和代际恢复。
+- 重用同一个 `request_id` 会回放最新的 `crew:add` 结果，包括已知终态。
+- 对同一代际重用同一个 `command_id`，会回放此前的 `crew:release` 或 `crew:abort` 结果。
+- 事件投递是 best-effort 的；订阅方应使用 `event_id` 去重。
 
 ---
 
