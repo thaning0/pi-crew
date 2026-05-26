@@ -2865,6 +2865,7 @@ async function maybePersistFirstClaimEventLocked(options: {
 	previousMember: RoomMemberState | null;
 	nextMember: RoomMemberState;
 	job: RoomSpawnJob | null;
+	persistActivatedReplay?: boolean;
 }): Promise<{
 	claimedEvent: CrewAddReplayableEvent | null;
 	activatedEvent: CrewAddReplayableEvent | null;
@@ -2924,7 +2925,9 @@ async function maybePersistFirstClaimEventLocked(options: {
 			?? null,
 		replay: buildReplaySnapshotFromEvent({
 			record,
-			event: activatedEvent ?? claimedEvent,
+			event: options.persistActivatedReplay && activatedEvent
+				? activatedEvent
+				: claimedEvent,
 			member: options.nextMember,
 			job: options.job,
 			updatedAt,
@@ -3344,6 +3347,7 @@ export async function markMemberJoined(options: {
 			previousMember: current,
 			nextMember: next,
 			job: spawnJob,
+			persistActivatedReplay: true,
 		});
 		return { ...next, claimedEvent, activatedEvent };
 	});
