@@ -20,9 +20,16 @@ import {
   createSpawningMember,
   createSpawnJob,
   readSpawnJob,
+  updateSpawnJob,
+  readCrewAddRequestReplay,
+  persistCrewAddReplayEvent,
   setRoomMutationClient,
   deleteRoomMutationClient,
 } from "./storage.ts";
+import {
+  buildCrewLifecycleEvent,
+  createCrewSpawnedLifecycleEvent,
+} from "./integration-events.ts";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -141,6 +148,95 @@ async function seedPaseoSpawningMember(
     },
     memberName,
     taskId,
+  };
+}
+
+async function seedReplayablePaseoSpawningMember(
+  roomDir: string,
+  options?: {
+    memberName?: string;
+    requestedName?: string;
+    taskId?: string;
+    token?: string;
+    requestId?: string;
+    activation?: "immediate" | "manual";
+    holdExpiresAt?: string | null;
+  },
+): Promise<{
+  bootstrap: Record<string, unknown>;
+  memberName: string;
+  taskId: string;
+  requestId: string;
+  holdExpiresAt: string | null;
+}> {
+  const memberName = options?.memberName ?? "replayable-paseo-worker";
+  const requestedName = options?.requestedName ?? "replayable-worker";
+  const taskId = options?.taskId ?? "spawn-replayable-paseo";
+  const token = options?.token ?? `${taskId}-token`;
+  const requestId = options?.requestId ?? `${taskId}-request`;
+  const activation = options?.activation ?? "immediate";
+  const created = await createSpawningMember(roomDir, {
+    name: memberName,
+    displayName: requestedName,
+    type: "worker",
+    backend: "paseo",
+    taskId,
+    bootstrapToken: token,
+    requestReplay: {
+      request_id: requestId,
+      requested_name: requestedName,
+      type: "worker",
+      model: null,
+      task: null,
+      transient: false,
+      metadata: null,
+      activation,
+      hold_timeout_ms: activation === "manual" ? 30_000 : null,
+    },
+  });
+  const holdExpiresAt = activation === "manual"
+    ? (options?.holdExpiresAt ?? new Date(Date.now() + 30_000).toISOString())
+    : null;
+  const spawnedEvent = buildCrewLifecycleEvent(
+    createCrewSpawnedLifecycleEvent({
+      request_id: requestId,
+      requested_name: requestedName,
+      member_target: created.member.name,
+      member_type: created.member.type,
+      room_id: path.basename(roomDir),
+      spawn_task_id: created.job.taskId,
+      runtime_id: null,
+      activation,
+      metadata: null,
+      delivery_state: activation === "manual" ? "held" : "enabled",
+      hold_expires_at: holdExpiresAt,
+    }),
+  );
+  await persistCrewAddReplayEvent({
+    roomDir,
+    requestId,
+    event: spawnedEvent,
+    member: created.member,
+    job: created.job,
+    updatedAt: created.job.updatedAt,
+  });
+
+  return {
+    bootstrap: {
+      version: 1,
+      roomId: path.basename(roomDir),
+      roomDir,
+      memberName: created.member.name,
+      memberType: created.member.type,
+      ownerName: "owner",
+      ownerSessionId: "integration-test-session",
+      token,
+      spawnTaskId: created.job.taskId,
+    },
+    memberName: created.member.name,
+    taskId: created.job.taskId,
+    requestId,
+    holdExpiresAt,
   };
 }
 
@@ -337,6 +433,172 @@ describe("Integration: concurrent write consistency", () => {
 });
 
 describe("Integration: split spawn mutations", () => {
+  it("emits claimed only after the first persisted non-null sessionId arrives", async () => {
+    await withTempDir(async (tempDir) => {
+      const { client, proxy, roomDir } = await setupTestEnv(tempDir);
+      const storage = await import("./storage.ts") as any;
+      const seeded = await seedReplayablePaseoSpawningMember(roomDir, {
+        taskId: "spawn-claim-session-anchor",
+        requestId: "req-claim-session-anchor",
+      });
+
+      setRoomMutationClient(roomDir, client);
+      try {
+        const nullClaim = await storage.claimMemberSession({
+          bootstrap: seeded.bootstrap,
+          sessionId: null,
+        });
+
+        expect(nullClaim.claimedEvent ?? null).toBeNull();
+        const replayAfterNullClaim = await readCrewAddRequestReplay(roomDir, seeded.requestId);
+        expect(replayAfterNullClaim?.replay?.event).not.toBe("claimed");
+
+        const claimed = await storage.claimMemberSession({
+          bootstrap: seeded.bootstrap,
+          sessionId: "member-claim-session",
+        });
+
+        expect(claimed.claimedEvent).toMatchObject({
+          event: "claimed",
+          phase: "delivery",
+          request_id: seeded.requestId,
+          member_target: seeded.memberName,
+          spawn_task_id: seeded.taskId,
+          runtime_id: null,
+        });
+        const replayAfterClaim = await readCrewAddRequestReplay(roomDir, seeded.requestId);
+        expect(replayAfterClaim?.replay).toMatchObject({
+          event: "claimed",
+          phase: "delivery",
+          request_id: seeded.requestId,
+          member_target: seeded.memberName,
+          spawn_task_id: seeded.taskId,
+          runtime_id: null,
+        });
+      } finally {
+        deleteRoomMutationClient(roomDir);
+        client.disconnect();
+        await proxy.stop();
+      }
+    });
+  });
+
+  it("does not emit claimed twice when a stale session reconciles an already claimed generation", async () => {
+    await withTempDir(async (tempDir) => {
+      const { client, proxy, roomDir } = await setupTestEnv(tempDir);
+      const storage = await import("./storage.ts") as any;
+      const seeded = await seedReplayablePaseoSpawningMember(roomDir, {
+        taskId: "spawn-claim-reconcile",
+        requestId: "req-claim-reconcile",
+      });
+
+      setRoomMutationClient(roomDir, client);
+      try {
+        const firstClaim = await storage.claimMemberSession({
+          bootstrap: seeded.bootstrap,
+          sessionId: "first-claim-session",
+        });
+        expect(firstClaim.claimedEvent).toMatchObject({
+          event: "claimed",
+          request_id: seeded.requestId,
+        });
+        const replayAfterFirstClaim = await readCrewAddRequestReplay(roomDir, seeded.requestId);
+
+        const duplicateClaim = await storage.claimMemberSession({
+          bootstrap: seeded.bootstrap,
+          sessionId: "stale-claim-session",
+        });
+
+        expect(duplicateClaim.sessionId).toBe("first-claim-session");
+        expect(duplicateClaim.claimedEvent ?? null).toBeNull();
+        const replayAfterDuplicateClaim = await readCrewAddRequestReplay(roomDir, seeded.requestId);
+        expect(replayAfterDuplicateClaim?.replay?.event).toBe("claimed");
+        expect(replayAfterDuplicateClaim?.replay?.event_id).toBe(
+          replayAfterFirstClaim?.replay?.event_id,
+        );
+      } finally {
+        deleteRoomMutationClient(roomDir);
+        client.disconnect();
+        await proxy.stop();
+      }
+    });
+  });
+
+  it("keeps manual activation held when the first persisted claim arrives", async () => {
+    await withTempDir(async (tempDir) => {
+      const { client, proxy, roomDir } = await setupTestEnv(tempDir);
+      const storage = await import("./storage.ts") as any;
+      const seeded = await seedReplayablePaseoSpawningMember(roomDir, {
+        taskId: "spawn-claim-held",
+        requestId: "req-claim-held",
+        activation: "manual",
+        holdExpiresAt: "2026-05-26T00:01:00.000Z",
+      });
+
+      setRoomMutationClient(roomDir, client);
+      try {
+        const claimed = await storage.claimMemberSession({
+          bootstrap: seeded.bootstrap,
+          sessionId: "manual-claim-session",
+        });
+
+        expect(claimed.claimedEvent).toMatchObject({
+          event: "claimed",
+          activation: "manual",
+          delivery_state: "held",
+          hold_expires_at: seeded.holdExpiresAt,
+        });
+        const replayAfterClaim = await readCrewAddRequestReplay(roomDir, seeded.requestId);
+        expect(replayAfterClaim?.replay).toMatchObject({
+          event: "claimed",
+          activation: "manual",
+          delivery_state: "held",
+          hold_expires_at: seeded.holdExpiresAt,
+        });
+      } finally {
+        deleteRoomMutationClient(roomDir);
+        client.disconnect();
+        await proxy.stop();
+      }
+    });
+  });
+
+  it("emits claimed when recovering from timed_out_pending_member_claim", async () => {
+    await withTempDir(async (tempDir) => {
+      const { client, proxy, roomDir } = await setupTestEnv(tempDir);
+      const storage = await import("./storage.ts") as any;
+      const seeded = await seedReplayablePaseoSpawningMember(roomDir, {
+        taskId: "spawn-claim-timeout-recovery",
+        requestId: "req-claim-timeout-recovery",
+      });
+
+      await updateSpawnJob(roomDir, seeded.taskId, {
+        state: "timed_out_pending_member_claim",
+        error: "member claim timed out",
+      });
+
+      setRoomMutationClient(roomDir, client);
+      try {
+        const claimed = await storage.claimMemberSession({
+          bootstrap: seeded.bootstrap,
+          sessionId: "timeout-recovery-session",
+        });
+
+        expect(claimed.claimedEvent).toMatchObject({
+          event: "claimed",
+          request_id: seeded.requestId,
+          spawn_task_id: seeded.taskId,
+        });
+        const replayAfterClaim = await readCrewAddRequestReplay(roomDir, seeded.requestId);
+        expect(replayAfterClaim?.replay?.event).toBe("claimed");
+      } finally {
+        deleteRoomMutationClient(roomDir);
+        client.disconnect();
+        await proxy.stop();
+      }
+    });
+  });
+
   it("routes claim/finalize through the mutation client and keeps paseo runtime empty until finalize", async () => {
     await withTempDir(async (tempDir) => {
       const { client, proxy, roomDir } = await setupTestEnv(tempDir);
@@ -387,9 +649,11 @@ describe("Integration: split spawn mutations", () => {
     await withTempDir(async (tempDir) => {
       const { client, proxy, roomDir } = await setupTestEnv(tempDir);
       const storage = await import("./storage.ts") as any;
-      const seeded = await seedPaseoSpawningMember(roomDir, {
+      const seeded = await seedReplayablePaseoSpawningMember(roomDir, {
         memberName: "finalize-first-worker",
+        requestedName: "finalize-first-worker",
         taskId: "spawn-finalize-first",
+        requestId: "req-finalize-first",
       });
 
       setRoomMutationClient(roomDir, client);
@@ -410,6 +674,21 @@ describe("Integration: split spawn mutations", () => {
           sessionId: "finalize-first-session",
         });
 
+        const replayAfterClaim = await readCrewAddRequestReplay(roomDir, seeded.requestId);
+        expect(claimed.claimedEvent).toMatchObject({
+          event: "claimed",
+          request_id: seeded.requestId,
+          member_target: seeded.memberName,
+          spawn_task_id: seeded.taskId,
+          runtime_id: "agent-finalize-first",
+        });
+        expect(replayAfterClaim?.replay).toMatchObject({
+          event: "claimed",
+          request_id: seeded.requestId,
+          member_target: seeded.memberName,
+          spawn_task_id: seeded.taskId,
+          runtime_id: "agent-finalize-first",
+        });
         expect(claimed.runtimeId).toBe("agent-finalize-first");
         expect(claimed.state).toBe("idle");
         expect(claimed.spawnTaskId).toBeNull();

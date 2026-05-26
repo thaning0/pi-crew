@@ -324,7 +324,10 @@ export class MutationProxyServer {
             memberName: finalized.member.name,
             taskId: finalized.job.taskId,
           });
-          return finalized.member;
+          return {
+            ...finalized.member,
+            claimedEvent: result.claimedEvent,
+          };
         }
         this.logger.debug("claim_member_session done", {
           memberName: result.name,
@@ -358,7 +361,10 @@ export class MutationProxyServer {
             memberName: finalized.member.name,
             taskId: finalized.job.taskId,
           });
-          return finalized.member;
+          return {
+            ...finalized.member,
+            claimedEvent: result.claimedEvent,
+          };
         }
         this.logger.debug("mark_member_joined done", {
           memberName: result.name,

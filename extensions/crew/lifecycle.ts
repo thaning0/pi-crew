@@ -25,6 +25,7 @@ import {
 	updateRoomMemberState,
 	writeMemberHeartbeat,
 } from "./storage.ts";
+import type { CrewAddReplayableEvent } from "./types.ts";
 import { allDepsReady, extractInputDeps } from "./deps.ts";
 import {
 	getMemberHeartbeatIntervalMs,
@@ -80,6 +81,18 @@ export interface ActiveRoomContext {
 }
 
 const activeRooms = new Map<string, ActiveRoomContext>();
+
+async function emitClaimedFeedback(
+	pi: ExtensionAPI,
+	claimedEvent: CrewAddReplayableEvent | null | undefined,
+): Promise<void> {
+	if (!claimedEvent) return;
+	try {
+		await pi.events.emit("crew:event", claimedEvent);
+	} catch {
+		// Best-effort only: claim feedback must not fail lifecycle activation.
+	}
+}
 const ownerClassificationUnavailableSessions = new Set<string>();
 const ownerClassificationReadySessions = new Set<string>();
 
@@ -678,6 +691,10 @@ export async function activateBootstrapRoom(
 					runtimeId: String(process.pid),
 					backend: "pi",
 				});
+	await emitClaimedFeedback(
+		pi,
+		(joined as { claimedEvent?: CrewAddReplayableEvent | null }).claimedEvent,
+	);
 
 	// If another session already owns this member (claimMemberSession
 	// preserved the existing sessionId), do not activate.  The member

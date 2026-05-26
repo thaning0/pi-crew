@@ -3,7 +3,12 @@ import type { CrewAddActivation } from "./types.ts";
 
 export type CrewDeliveryState = "pending" | "held" | "enabled" | "ended";
 export type CrewLifecyclePhase = "request" | "spawn" | "delivery";
-export type CrewLifecycleEventName = CrewDeliveryState | "rejected" | "spawned" | "failed";
+export type CrewLifecycleEventName =
+	| CrewDeliveryState
+	| "claimed"
+	| "rejected"
+	| "spawned"
+	| "failed";
 
 export interface CrewLifecycleEvent {
 	event_id: string;

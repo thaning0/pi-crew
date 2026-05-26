@@ -14,6 +14,7 @@ export type RoomSpawnJobState =
 export type CrewReplayLifecyclePhase = "request" | "spawn" | "delivery";
 export type CrewReplayLifecycleEventName =
 	| "pending"
+	| "claimed"
 	| "held"
 	| "enabled"
 	| "ended"

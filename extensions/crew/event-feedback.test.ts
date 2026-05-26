@@ -385,6 +385,62 @@ describe("crew:add request feedback", () => {
 		);
 	});
 
+	it("preserves held delivery fields when replaying a claimed lifecycle snapshot", async () => {
+		const harness = createHarness();
+		await cacheProjectCwd(harness.lifecycleHandlers);
+		setOwnerRoom();
+		queueCrewAddMock.mockResolvedValueOnce({
+			memberName: "worker_deadbeef",
+			memberLabel: "worker#deadbeef",
+			taskId: "spawn-task-claimed-held",
+			backend: "paseo",
+			transient: false,
+			unresolvedMentions: [],
+			replayed: true,
+			replayedLifecycleEvent: {
+				event_id: "crew-event-claimed-held",
+				event: "claimed",
+				phase: "delivery",
+				request_id: "req-claimed-held",
+				command_id: null,
+				requested_name: "worker",
+				member_target: "worker_deadbeef",
+				member_type: "builder",
+				room_id: "room-1",
+				spawn_task_id: "spawn-task-claimed-held",
+				runtime_id: null,
+				activation: "manual",
+				metadata: null,
+				delivery_state: "held",
+				hold_expires_at: "2026-05-26T00:01:00.000Z",
+				error: null,
+				reason: null,
+			},
+		});
+
+		harness.eventHandlers.get("crew:add")?.({
+			request_id: "req-claimed-held",
+			name: "worker",
+			type: "builder",
+			activation: "manual",
+			hold_timeout_ms: 30_000,
+		});
+		await flushAsyncWork();
+
+		expect(queueCrewAddMock).toHaveBeenCalledTimes(1);
+		expect(crewEventPayloads(harness.emit)).toContainEqual(
+			expect.objectContaining({
+				event_id: "crew-event-claimed-held",
+				event: "claimed",
+				phase: "delivery",
+				request_id: "req-claimed-held",
+				spawn_task_id: "spawn-task-claimed-held",
+				delivery_state: "held",
+				hold_expires_at: "2026-05-26T00:01:00.000Z",
+			}),
+		);
+	});
+
 	it("emits rejected with a request-id-conflict reason when queueing reports conflicting reuse", async () => {
 		const harness = createHarness();
 		await cacheProjectCwd(harness.lifecycleHandlers);

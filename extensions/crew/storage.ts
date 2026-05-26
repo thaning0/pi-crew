@@ -31,6 +31,10 @@ export interface RoomMutationProxy {
 	stop(): Promise<void>;
 }
 
+export type SessionClaimMutationResult = RoomMemberState & {
+	claimedEvent: CrewAddReplayableEvent | null;
+};
+
 const roomProxyServers = new Map<string, RoomMutationProxy>();
 const roomProxyInitPromises = new Map<string, Promise<RoomMutationProxy>>();
 
@@ -982,30 +986,45 @@ function buildCrewAddReplayLifecycleSnapshot(options: {
 		&& (previous.event === "spawned" || previous.event === "failed")
 			? previous
 			: null;
+	const preservedClaimEvent =
+		previous
+		&& previous.phase === "delivery"
+		&& previous.event === "claimed"
+		&& (
+			!derivedEvent
+			|| derivedEvent.phase !== "delivery"
+			|| derivedEvent.event !== "ended"
+		)
+			? previous
+			: null;
 	return {
-		event_id: preservedSpawnEvent?.event_id ?? derivedEvent?.event_id ?? previous?.event_id ?? null,
-		event: preservedSpawnEvent?.event ?? derivedEvent?.event ?? previous?.event ?? null,
-		phase: preservedSpawnEvent?.phase ?? derivedEvent?.phase ?? previous?.phase ?? null,
+		event_id: preservedSpawnEvent?.event_id ?? preservedClaimEvent?.event_id ?? derivedEvent?.event_id ?? previous?.event_id ?? null,
+		event: preservedSpawnEvent?.event ?? preservedClaimEvent?.event ?? derivedEvent?.event ?? previous?.event ?? null,
+		phase: preservedSpawnEvent?.phase ?? preservedClaimEvent?.phase ?? derivedEvent?.phase ?? previous?.phase ?? null,
 		request_id: options.record.request_id,
-		command_id: preservedSpawnEvent?.command_id ?? derivedEvent?.command_id ?? previous?.command_id ?? null,
+		command_id: preservedSpawnEvent?.command_id ?? preservedClaimEvent?.command_id ?? derivedEvent?.command_id ?? previous?.command_id ?? null,
 		requested_name: options.record.material.requested_name,
 		member_target:
 			preservedSpawnEvent?.member_target
+			?? preservedClaimEvent?.member_target
 			?? derivedEvent?.member_target
 			?? options.member?.name
 			?? options.record.member_name,
 		member_type:
 			preservedSpawnEvent?.member_type
+			?? preservedClaimEvent?.member_type
 			?? derivedEvent?.member_type
 			?? options.record.material.type,
 		room_id:
 			preservedSpawnEvent?.room_id
+			?? preservedClaimEvent?.room_id
 			?? derivedEvent?.room_id
 			?? previous?.room_id
 			?? null,
 		spawn_task_id: options.record.spawn_task_id,
 		runtime_id:
 			preservedSpawnEvent?.runtime_id
+			?? preservedClaimEvent?.runtime_id
 			?? derivedEvent?.runtime_id
 			?? options.member?.runtimeId
 			?? options.job?.runtimeId
@@ -1014,28 +1033,33 @@ function buildCrewAddReplayLifecycleSnapshot(options: {
 		activation: options.record.activation,
 		metadata:
 			preservedSpawnEvent?.metadata
+			?? preservedClaimEvent?.metadata
 			?? derivedEvent?.metadata
 			?? options.record.metadata
 			?? previous?.metadata
 			?? null,
 		delivery_state:
 			preservedSpawnEvent?.delivery_state
+			?? preservedClaimEvent?.delivery_state
 			?? derivedEvent?.delivery_state
 			?? previous?.delivery_state
 			?? null,
 		hold_expires_at:
 			preservedSpawnEvent?.hold_expires_at
+			?? preservedClaimEvent?.hold_expires_at
 			?? derivedEvent?.hold_expires_at
 			?? previous?.hold_expires_at
 			?? null,
 		error:
 			preservedSpawnEvent?.error
+			?? preservedClaimEvent?.error
 			?? derivedEvent?.error
 			?? options.job?.error
 			?? options.member?.lastError
 			?? null,
 		reason:
 			preservedSpawnEvent?.reason
+			?? preservedClaimEvent?.reason
 			?? derivedEvent?.reason
 			?? previous?.reason
 			?? null,
@@ -1592,6 +1616,96 @@ function resolveRuntimeIdentitySource(options: {
 	return "none";
 }
 
+function replayEventHasPersistedClaim(event: CrewAddReplayRecord["replay"]): boolean {
+	return event?.event === "claimed"
+		|| event?.event === "held"
+		|| event?.event === "enabled"
+		|| event?.event === "ended";
+}
+
+function buildCrewClaimedReplayEvent(options: {
+	record: CrewAddReplayRecord;
+	member: RoomMemberState;
+	job: RoomSpawnJob | null;
+	roomId: string;
+}): CrewAddReplayableEvent {
+	const previous = options.record.replay;
+	const deliveryState =
+		previous?.delivery_state
+		?? (options.record.activation === "manual" ? "held" : "enabled");
+	const holdExpiresAt = deliveryState === "held"
+		? (previous?.hold_expires_at ?? null)
+		: null;
+	return buildCrewLifecycleEvent({
+		event: "claimed",
+		phase: "delivery",
+		request_id: options.record.request_id,
+		command_id: previous?.command_id ?? null,
+		requested_name: options.record.material.requested_name,
+		member_target: options.member.name,
+		member_type: options.member.type,
+		room_id: previous?.room_id ?? options.roomId,
+		spawn_task_id: options.job?.taskId ?? options.record.spawn_task_id,
+		runtime_id:
+			options.member.runtimeId
+			?? options.job?.runtimeId
+			?? previous?.runtime_id
+			?? null,
+		activation: options.record.activation,
+		metadata: previous?.metadata ?? options.record.metadata ?? null,
+		delivery_state: deliveryState,
+		hold_expires_at: holdExpiresAt,
+		error: null,
+		reason: null,
+	});
+}
+
+async function maybePersistFirstClaimEventLocked(options: {
+	roomDir: string;
+	roomId: string;
+	previousMember: RoomMemberState | null;
+	nextMember: RoomMemberState;
+	job: RoomSpawnJob | null;
+}): Promise<CrewAddReplayableEvent | null> {
+	if (!options.nextMember.requestId || !options.nextMember.sessionId) {
+		return null;
+	}
+	const record = await readCrewAddRequestReplay(options.roomDir, options.nextMember.requestId);
+	if (!record) {
+		return null;
+	}
+	if (options.previousMember?.sessionId || replayEventHasPersistedClaim(record.replay)) {
+		return null;
+	}
+	const claimedEvent = buildCrewClaimedReplayEvent({
+		record,
+		member: options.nextMember,
+		job: options.job,
+		roomId: options.roomId,
+	});
+	const updatedAt = options.nextMember.updatedAt;
+	await writeCrewAddRequestReplayFile(options.roomDir, {
+		...record,
+		member_name: options.nextMember.name,
+		member_label: formatMemberLabel(options.nextMember),
+		backend: options.job?.backend ?? options.nextMember.backend ?? record.backend,
+		bootstrap_token:
+			options.nextMember.bootstrapToken
+			?? options.job?.bootstrapToken
+			?? record.bootstrap_token
+			?? null,
+		replay: buildReplaySnapshotFromEvent({
+			record,
+			event: claimedEvent,
+			member: options.nextMember,
+			job: options.job,
+			updatedAt,
+		}),
+		updated_at: updatedAt,
+	});
+	return claimedEvent;
+}
+
 function hasBootstrapClaim(current: RoomMemberState, job: RoomSpawnJob): boolean {
 	return Boolean(current.sessionId) || Boolean(current.bootstrapClaimedAt) || job.state === "claimed" || job.state === "completed";
 }
@@ -1600,8 +1714,8 @@ export async function claimMemberSession(options: {
 	bootstrap: RoomBootstrap;
 	sessionId: string | null;
 	memberPid?: number | null;
-}): Promise<RoomMemberState> {
-	const viaClient = await tryViaMutationClient<RoomMemberState>(options.bootstrap.roomDir, {
+}): Promise<SessionClaimMutationResult> {
+	const viaClient = await tryViaMutationClient<SessionClaimMutationResult>(options.bootstrap.roomDir, {
 		kind: "claim_member_session",
 		payload: options,
 	});
@@ -1635,6 +1749,7 @@ export async function claimMemberSession(options: {
 			throw new SpawnFailedError(options.bootstrap.memberName, `spawn job ${spawnJob?.taskId ?? options.bootstrap.spawnTaskId ?? "unknown"} belongs to a different member generation`);
 		}
 
+		const previousMember = current;
 		const baseline: RoomMemberState = current ?? {
 			name: options.bootstrap.memberName,
 			type: options.bootstrap.memberType,
@@ -1709,13 +1824,20 @@ export async function claimMemberSession(options: {
 		};
 
 		await writeRoomMemberState(options.bootstrap.roomDir, next);
+		const claimedEvent = await maybePersistFirstClaimEventLocked({
+			roomDir: options.bootstrap.roomDir,
+			roomId: options.bootstrap.roomId,
+			previousMember,
+			nextMember: next,
+			job: nextJob,
+		});
 		log.info("bootstrap claimed", {
 			memberName: next.name,
 			taskId: next.spawnTaskId ?? options.bootstrap.spawnTaskId ?? null,
 			sessionId: next.sessionId,
 			runtimeId: next.runtimeId,
 		});
-		return next;
+		return { ...next, claimedEvent };
 	});
 }
 
@@ -1820,10 +1942,10 @@ export async function markMemberJoined(options: {
 	sessionId: string | null;
 	runtimeId: string;
 	backend?: RoomMemberState["backend"];
-}): Promise<RoomMemberState> {
+}): Promise<SessionClaimMutationResult> {
 	const { bootstrap, sessionId, runtimeId } = options;
 	// Try agent-side proxy first (eliminates file-lock contention)
-	const viaClient = await tryViaMutationClient<RoomMemberState>(bootstrap.roomDir, {
+	const viaClient = await tryViaMutationClient<SessionClaimMutationResult>(bootstrap.roomDir, {
 		kind: "mark_member_joined",
 		payload: { bootstrap, sessionId, runtimeId, backend: options.backend },
 	});
@@ -1988,7 +2110,14 @@ export async function markMemberJoined(options: {
 			bootstrapToken: expectedBootstrapToken ?? current.bootstrapToken ?? bootstrap.token,
 		};
 		await writeRoomMemberState(bootstrap.roomDir, next);
-		return next;
+		const claimedEvent = await maybePersistFirstClaimEventLocked({
+			roomDir: bootstrap.roomDir,
+			roomId: bootstrap.roomId,
+			previousMember: current,
+			nextMember: next,
+			job: spawnJob,
+		});
+		return { ...next, claimedEvent };
 	});
 }
 
