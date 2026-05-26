@@ -984,6 +984,75 @@ describe("Member identity helpers", () => {
 			});
 		});
 
+		it("rebuilds a missing replay file from the matching member job only", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-request-replay-rebuild",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+
+				const first = await createSpawningMember(created.roomDir, {
+					displayName: "worker",
+					type: "worker",
+					backend: "pi",
+					taskId: "z-request-replay-real-job",
+					requestReplay: {
+						requestId: "req-rebuild-replay",
+						requestedName: "worker",
+						type: "worker",
+						model: null,
+						task: "rebuild me",
+						transient: false,
+						metadata: { source: "first-call" },
+						activation: "manual",
+						holdTimeoutMs: null,
+					},
+				} as never);
+
+				const bystander = await createSpawningMember(created.roomDir, {
+					displayName: "bystander",
+					type: "worker",
+					backend: "pi",
+					taskId: "a-request-replay-wrong-job",
+				} as never);
+				await storage.writeSpawnJob(created.roomDir, {
+					...bystander.job,
+					requestId: "req-rebuild-replay",
+					updatedAt: new Date().toISOString(),
+				});
+
+				await fs.rm(storage.getCrewAddRequestReplayPath(created.roomDir, "req-rebuild-replay"), { force: true });
+
+				const replayed = await createSpawningMember(created.roomDir, {
+					displayName: "worker",
+					type: "worker",
+					backend: "pi",
+					taskId: "retry-request-replay-real-job",
+					requestReplay: {
+						requestId: "req-rebuild-replay",
+						requestedName: "worker",
+						type: "worker",
+						model: null,
+						task: "rebuild me",
+						transient: false,
+						metadata: { source: "retry-call" },
+						activation: "manual",
+						holdTimeoutMs: null,
+					},
+				} as never);
+
+				expect(replayed.replayed).toBe(true);
+				expect(replayed.member.name).toBe(first.member.name);
+				expect(replayed.job.memberName).toBe(first.member.name);
+				expect(replayed.job.taskId).toBe(first.job.taskId);
+				expect(replayed.replayRecord?.spawn_task_id).toBe(first.job.taskId);
+			});
+		});
+
 		it("treats omitted activation and explicit immediate as the same replay identity", async () => {
 			await withTempDir(async (tempDir) => {
 				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");

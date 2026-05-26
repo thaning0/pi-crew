@@ -2298,7 +2298,8 @@ export async function createSpawningMember(
 			const existingMember = (await listRoomMembers(roomDir))
 				.find((member) => member.requestId === replaySeed.request_id) ?? null;
 			const existingJob = existingMember
-				? (await listRoomSpawnJobs(roomDir)).find((job) => job.requestId === replaySeed.request_id) ?? null
+				? (await listRoomSpawnJobs(roomDir))
+					.find((job) => job.requestId === replaySeed.request_id && job.memberName === existingMember.name) ?? null
 				: null;
 			if (existingMember && existingJob) {
 				const recoveredRecord = buildCrewAddReplayRecord({
