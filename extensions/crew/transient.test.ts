@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
 	createRoom,
 	initializeRoomRuntime,
 	listBoardEntries,
 	listRoomMembers,
 	loadRoomMemberState,
+	readCrewAddRequestReplay,
 	writeRoomMemberState,
 	writeSpawnJob,
 	readSpawnJob,
@@ -27,6 +28,7 @@ import {
 	queueCrewAdd,
 } from "./tools.ts";
 import { setActiveRoom, clearActiveRoom, resetActiveRoomsForTests, getActiveRoom } from "./lifecycle.ts";
+import { setCrewEventEmitter } from "./integration-events.ts";
 import {
 	createPiMemberAdapter,
 	createPaseoPiMemberAdapter,
@@ -90,10 +92,23 @@ function setMemberActiveRoomContext(created: Awaited<ReturnType<typeof createRoo
 	});
 }
 
+function captureCrewEvents(): Array<Record<string, unknown>> {
+	const events: Array<Record<string, unknown>> = [];
+	setCrewEventEmitter(async (payload) => {
+		events.push(payload as Record<string, unknown>);
+	});
+	return events;
+}
+
 describe("transient subagents", () => {
 	beforeEach(() => {
 		clearActiveRoom();
 		resetActiveRoomsForTests();
+		setCrewEventEmitter(null);
+	});
+
+	afterEach(() => {
+		setCrewEventEmitter(null);
 	});
 
 	it("rejects transient without task", async () => {
@@ -236,6 +251,170 @@ describe("transient subagents", () => {
 			expect(result.isError).toBe(true);
 			const text = result.content?.[0]?.text ?? "";
 			expect(text).toContain("Simulated spawn failure");
+		});
+	});
+
+	it("emits spawned with internal member_target and persists the replay snapshot after successful crew:add", async () => {
+		await withTempDir(async (tempDir) => {
+			const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+			const sessionId = "owner-session-spawned-event";
+			const created = await createRoom({
+				runtimeRoot,
+				ownerName: "owner",
+				ownerSessionId: sessionId,
+				cwd: tempDir,
+				ownerPid: process.pid,
+			});
+			setOwnerActiveRoomContext(created, sessionId);
+			const events = captureCrewEvents();
+			const metadata = { source: "spawned-test" };
+
+			const queued = await queueCrewAdd(
+				{
+					request_id: "req-spawned-event",
+					name: "worker",
+					type: "worker",
+					activation: "manual",
+					hold_timeout_ms: 60_000,
+					metadata,
+				},
+				{
+					activeRoom: getActiveRoom(sessionId)!,
+					sessionId,
+					ctx: { cwd: tempDir, hasUI: false },
+					adapters: {
+						pi: {
+							kind: "pi",
+							async isAvailable() { return true; },
+							async spawn() {
+								return { runtimeId: "runtime-spawned-event", backend: "pi" };
+							},
+						},
+						paseo: {
+							kind: "paseo",
+							async isAvailable() { return false; },
+							async spawn() { throw new Error("not used"); },
+						},
+					},
+				},
+			);
+
+			await Promise.allSettled([...(getActiveRoom(sessionId)?.pendingToolTasks ?? [])]);
+
+			expect(events).toContainEqual(
+				expect.objectContaining({
+					event: "spawned",
+					phase: "spawn",
+					request_id: "req-spawned-event",
+					requested_name: "worker",
+					member_target: queued.memberName,
+					member_type: "worker",
+					room_id: created.metadata.roomId,
+					spawn_task_id: queued.taskId,
+					runtime_id: "runtime-spawned-event",
+					activation: "manual",
+					metadata,
+					delivery_state: "held",
+				}),
+			);
+			expect(events[0]).not.toHaveProperty("member_id");
+
+			const replay = await readCrewAddRequestReplay(created.roomDir, "req-spawned-event");
+			expect(replay?.replay).toMatchObject({
+				event: "spawned",
+				phase: "spawn",
+				request_id: "req-spawned-event",
+				requested_name: "worker",
+				member_target: queued.memberName,
+				member_type: "worker",
+				room_id: created.metadata.roomId,
+				spawn_task_id: queued.taskId,
+				runtime_id: "runtime-spawned-event",
+				activation: "manual",
+				metadata,
+				delivery_state: "held",
+			});
+		});
+	});
+
+	it("emits spawn-level failed after generation creation and persists the replay snapshot", async () => {
+		await withTempDir(async (tempDir) => {
+			const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+			const sessionId = "owner-session-spawn-failed-event";
+			const created = await createRoom({
+				runtimeRoot,
+				ownerName: "owner",
+				ownerSessionId: sessionId,
+				cwd: tempDir,
+				ownerPid: process.pid,
+			});
+			setOwnerActiveRoomContext(created, sessionId);
+			const events = captureCrewEvents();
+			const metadata = { source: "spawn-failed-test" };
+
+			const queued = await queueCrewAdd(
+				{
+					request_id: "req-spawn-failed-event",
+					name: "worker",
+					type: "worker",
+					metadata,
+				},
+				{
+					activeRoom: getActiveRoom(sessionId)!,
+					sessionId,
+					ctx: { cwd: tempDir, hasUI: false },
+					adapters: {
+						pi: {
+							kind: "pi",
+							async isAvailable() { return true; },
+							async spawn() {
+								throw new Error("forced adapter failure");
+							},
+						},
+						paseo: {
+							kind: "paseo",
+							async isAvailable() { return false; },
+							async spawn() { throw new Error("not used"); },
+						},
+					},
+				},
+			);
+
+			await Promise.allSettled([...(getActiveRoom(sessionId)?.pendingToolTasks ?? [])]);
+
+			expect(events).toContainEqual(
+				expect.objectContaining({
+					event: "failed",
+					phase: "spawn",
+					request_id: "req-spawn-failed-event",
+					requested_name: "worker",
+					member_target: queued.memberName,
+					member_type: "worker",
+					room_id: created.metadata.roomId,
+					spawn_task_id: queued.taskId,
+					runtime_id: null,
+					activation: "immediate",
+					metadata,
+					error: "forced adapter failure",
+				}),
+			);
+			expect(events[0]).not.toHaveProperty("member_id");
+
+			const replay = await readCrewAddRequestReplay(created.roomDir, "req-spawn-failed-event");
+			expect(replay?.replay).toMatchObject({
+				event: "failed",
+				phase: "spawn",
+				request_id: "req-spawn-failed-event",
+				requested_name: "worker",
+				member_target: queued.memberName,
+				member_type: "worker",
+				room_id: created.metadata.roomId,
+				spawn_task_id: queued.taskId,
+				runtime_id: null,
+				activation: "immediate",
+				metadata,
+				error: "forced adapter failure",
+			});
 		});
 	});
 

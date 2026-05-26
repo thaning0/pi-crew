@@ -7,6 +7,7 @@ import { withFileLock, type FileLockOptions } from "./lock.ts";
 import { createRoomLogger } from "./logger.ts";
 import { buildCrewLifecycleEvent } from "./integration-events.ts";
 import type {
+	CrewAddReplayableEvent,
 	CrewAddReplayLifecycleSnapshot,
 	CrewAddReplayRecord,
 	CrewAddReplaySeed,
@@ -894,8 +895,12 @@ function deriveCrewAddReplayEvent(record: CrewAddReplayRecord, member: RoomMembe
 		command_id: null,
 		requested_name: record.material.requested_name,
 		member_target: member?.name ?? record.member_name,
+		member_type: record.material.type,
+		room_id: record.replay?.room_id ?? null,
 		spawn_task_id: record.spawn_task_id,
+		runtime_id: member?.runtimeId ?? job?.runtimeId ?? record.replay?.runtime_id ?? null,
 		activation: record.activation,
+		metadata: record.metadata ?? null,
 	};
 	const error = job?.error ?? member?.lastError ?? null;
 	const terminalReason = deriveCrewAddReplayReason(member, job);
@@ -971,24 +976,108 @@ function buildCrewAddReplayLifecycleSnapshot(options: {
 	const previous = options.record.replay;
 	const updatedAt = options.updatedAt ?? new Date().toISOString();
 	const derivedEvent = deriveCrewAddReplayEvent(options.record, options.member ?? null, options.job ?? null);
+	const preservedSpawnEvent =
+		previous
+		&& previous.phase === "spawn"
+		&& (previous.event === "spawned" || previous.event === "failed")
+			? previous
+			: null;
 	return {
-		event_id: derivedEvent?.event_id ?? previous?.event_id ?? null,
-		event: derivedEvent?.event ?? previous?.event ?? null,
-		phase: derivedEvent?.phase ?? previous?.phase ?? null,
+		event_id: preservedSpawnEvent?.event_id ?? derivedEvent?.event_id ?? previous?.event_id ?? null,
+		event: preservedSpawnEvent?.event ?? derivedEvent?.event ?? previous?.event ?? null,
+		phase: preservedSpawnEvent?.phase ?? derivedEvent?.phase ?? previous?.phase ?? null,
 		request_id: options.record.request_id,
-		command_id: derivedEvent?.command_id ?? previous?.command_id ?? null,
+		command_id: preservedSpawnEvent?.command_id ?? derivedEvent?.command_id ?? previous?.command_id ?? null,
 		requested_name: options.record.material.requested_name,
-		member_target: derivedEvent?.member_target ?? options.record.member_label,
+		member_target:
+			preservedSpawnEvent?.member_target
+			?? derivedEvent?.member_target
+			?? options.member?.name
+			?? options.record.member_name,
+		member_type:
+			preservedSpawnEvent?.member_type
+			?? derivedEvent?.member_type
+			?? options.record.material.type,
+		room_id:
+			preservedSpawnEvent?.room_id
+			?? derivedEvent?.room_id
+			?? previous?.room_id
+			?? null,
 		spawn_task_id: options.record.spawn_task_id,
+		runtime_id:
+			preservedSpawnEvent?.runtime_id
+			?? derivedEvent?.runtime_id
+			?? options.member?.runtimeId
+			?? options.job?.runtimeId
+			?? previous?.runtime_id
+			?? null,
 		activation: options.record.activation,
-		delivery_state: derivedEvent?.delivery_state ?? previous?.delivery_state ?? null,
-		hold_expires_at: derivedEvent?.hold_expires_at ?? previous?.hold_expires_at ?? null,
-		error: derivedEvent?.error ?? options.job?.error ?? options.member?.lastError ?? null,
-		reason: derivedEvent?.reason ?? previous?.reason ?? null,
+		metadata:
+			preservedSpawnEvent?.metadata
+			?? derivedEvent?.metadata
+			?? options.record.metadata
+			?? previous?.metadata
+			?? null,
+		delivery_state:
+			preservedSpawnEvent?.delivery_state
+			?? derivedEvent?.delivery_state
+			?? previous?.delivery_state
+			?? null,
+		hold_expires_at:
+			preservedSpawnEvent?.hold_expires_at
+			?? derivedEvent?.hold_expires_at
+			?? previous?.hold_expires_at
+			?? null,
+		error:
+			preservedSpawnEvent?.error
+			?? derivedEvent?.error
+			?? options.job?.error
+			?? options.member?.lastError
+			?? null,
+		reason:
+			preservedSpawnEvent?.reason
+			?? derivedEvent?.reason
+			?? previous?.reason
+			?? null,
 		member_state: options.member?.state ?? previous?.member_state ?? null,
 		job_state: options.job?.state ?? previous?.job_state ?? null,
-		runtime_id: options.member?.runtimeId ?? options.job?.runtimeId ?? null,
 		updated_at: updatedAt,
+	};
+}
+
+function buildReplaySnapshotFromEvent(options: {
+	record: CrewAddReplayRecord;
+	event: CrewAddReplayableEvent;
+	member: RoomMemberState | null;
+	job: RoomSpawnJob | null;
+	updatedAt: string;
+}): CrewAddReplayLifecycleSnapshot {
+	return {
+		event_id: options.event.event_id,
+		event: options.event.event,
+		phase: options.event.phase,
+		request_id: options.event.request_id ?? options.record.request_id,
+		command_id: options.event.command_id,
+		requested_name: options.event.requested_name ?? options.record.material.requested_name,
+		member_target: options.event.member_target ?? options.member?.name ?? options.record.member_name,
+		member_type: options.event.member_type ?? options.record.material.type,
+		room_id: options.event.room_id ?? options.record.replay?.room_id ?? null,
+		spawn_task_id: options.event.spawn_task_id ?? options.record.spawn_task_id,
+		runtime_id:
+			options.event.runtime_id
+			?? options.member?.runtimeId
+			?? options.job?.runtimeId
+			?? options.record.replay?.runtime_id
+			?? null,
+		activation: options.event.activation ?? options.record.activation,
+		metadata: options.event.metadata ?? options.record.metadata ?? null,
+		delivery_state: options.event.delivery_state ?? null,
+		hold_expires_at: options.event.hold_expires_at ?? null,
+		error: options.event.error ?? null,
+		reason: options.event.reason ?? null,
+		member_state: options.member?.state ?? options.record.replay?.member_state ?? null,
+		job_state: options.job?.state ?? options.record.replay?.job_state ?? null,
+		updated_at: options.updatedAt,
 	};
 }
 
@@ -1197,6 +1286,48 @@ async function syncCrewAddReplayRecord(options: {
 			updatedAt,
 		}),
 		updated_at: updatedAt,
+	});
+}
+
+export async function persistCrewAddReplayEvent(options: {
+	roomDir: string;
+	requestId: string;
+	event: CrewAddReplayableEvent;
+	member?: RoomMemberState | null;
+	job?: RoomSpawnJob | null;
+	updatedAt?: string;
+}): Promise<void> {
+	await withRoomMutationLock(options.roomDir, async () => {
+		const record = await readCrewAddRequestReplay(options.roomDir, options.requestId);
+		if (!record) {
+			return;
+		}
+		const member = options.member === undefined
+			? await loadRoomMemberState(options.roomDir, record.member_name).catch(() => null)
+			: options.member;
+		const job = options.job === undefined
+			? await readSpawnJob(options.roomDir, record.spawn_task_id).catch(() => null)
+			: options.job;
+		const updatedAt = options.updatedAt ?? new Date().toISOString();
+		await writeCrewAddRequestReplayFile(options.roomDir, {
+			...record,
+			member_name: member?.name ?? record.member_name,
+			member_label: member ? formatMemberLabel(member) : record.member_label,
+			backend: job?.backend ?? member?.backend ?? record.backend,
+			bootstrap_token:
+				member?.bootstrapToken
+				?? job?.bootstrapToken
+				?? record.bootstrap_token
+				?? null,
+			replay: buildReplaySnapshotFromEvent({
+				record,
+				event: options.event,
+				member,
+				job,
+				updatedAt,
+			}),
+			updated_at: updatedAt,
+		});
 	});
 }
 

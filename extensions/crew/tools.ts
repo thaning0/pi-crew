@@ -102,6 +102,7 @@ import {
 	listRoomMembers,
 	loadRoomMemberState,
 	normalizeMemberDisplayName,
+	persistCrewAddReplayEvent,
 	prepareCrewAddReplay,
 	resolveMemberTarget,
 	resolveMemberTargetForMerge,
@@ -114,6 +115,11 @@ import {
 	writeJsonAtomic,
 	writeRoomMemberState,
 } from "./storage.ts";
+import {
+	createCrewFailedLifecycleEvent,
+	createCrewSpawnedLifecycleEvent,
+	emitCrewLifecycleEvent,
+} from "./integration-events.ts";
 import {
 	buildRoomMemberSystemPrompt,
 	listRoomAgentTypes,
@@ -473,6 +479,49 @@ function crewAddReplayMatchesRequest(
 		&& record.hold_timeout_ms === (params.hold_timeout_ms ?? null);
 }
 
+function toQueuedCrewReplayEvent(
+	replay: CrewAddReplayRecord["replay"] | null | undefined,
+): QueuedCrewAddResult["replayedLifecycleEvent"] {
+	if (!replay?.event || !replay.event_id || !replay.phase) {
+		return null;
+	}
+	return {
+		event_id: replay.event_id,
+		event: replay.event,
+		phase: replay.phase,
+		request_id: replay.request_id,
+		command_id: replay.command_id,
+		requested_name: replay.requested_name,
+		member_target: replay.member_target,
+		member_type: replay.member_type,
+		room_id: replay.room_id,
+		spawn_task_id: replay.spawn_task_id,
+		runtime_id: replay.runtime_id,
+		activation: replay.activation,
+		metadata: replay.metadata,
+		delivery_state: replay.delivery_state,
+		hold_expires_at: replay.hold_expires_at,
+		error: replay.error,
+		reason: replay.reason,
+	};
+}
+
+function computeSpawnDeliveryState(
+	activation: "immediate" | "manual",
+): "enabled" | "held" {
+	return activation === "manual" ? "held" : "enabled";
+}
+
+function computeSpawnHoldExpiresAt(
+	activation: "immediate" | "manual",
+	holdTimeoutMs?: number,
+): string | null {
+	if (activation !== "manual" || !Number.isInteger(holdTimeoutMs) || holdTimeoutMs <= 0) {
+		return null;
+	}
+	return new Date(Date.now() + holdTimeoutMs).toISOString();
+}
+
 type QueueCrewTellOptions = {
 	activeRoom: ActiveRoomContext;
 	batchContext?: QueueBatchContext;
@@ -691,25 +740,7 @@ export async function queueCrewAdd(
 				backend: replayRecord.backend,
 				transient: replayRecord.material.transient,
 				replayed: true,
-				replayedLifecycleEvent: replayRecord.replay?.event
-					&& replayRecord.replay.event_id
-					&& replayRecord.replay.phase
-					? {
-						event_id: replayRecord.replay.event_id,
-						event: replayRecord.replay.event,
-						phase: replayRecord.replay.phase,
-						request_id: replayRecord.replay.request_id,
-						command_id: replayRecord.replay.command_id,
-						requested_name: replayRecord.replay.requested_name,
-						member_target: replayRecord.replay.member_target,
-						spawn_task_id: replayRecord.replay.spawn_task_id,
-						activation: replayRecord.replay.activation,
-						delivery_state: replayRecord.replay.delivery_state,
-						hold_expires_at: replayRecord.replay.hold_expires_at,
-						error: replayRecord.replay.error,
-						reason: replayRecord.replay.reason,
-					}
-					: null,
+				replayedLifecycleEvent: toQueuedCrewReplayEvent(replayRecord.replay),
 				request_id: replayRecord.request_id,
 				activation: replayRecord.activation ?? undefined,
 				hold_timeout_ms: replayRecord.hold_timeout_ms ?? undefined,
@@ -721,6 +752,8 @@ export async function queueCrewAdd(
 	const taskId = randomUUID();
 	const bootstrapToken = randomUUID();
 	const spawnNonce = randomUUID().replace(/-/g, "").slice(0, 6);
+	const activation = normalizeCrewAddReplayActivation(params.activation);
+	const holdExpiresAt = computeSpawnHoldExpiresAt(activation, params.hold_timeout_ms);
 
 	const typedAgent = loadTypedRoomAgentDefinition(params.type, options.ctx.cwd);
 	if (!typedAgent) {
@@ -772,25 +805,7 @@ export async function queueCrewAdd(
 		});
 		internalName = created.member.name;
 		memberLabel = created.replayRecord?.member_label ?? formatMemberLabel(created.member);
-		replayedLifecycleEvent = created.replayRecord?.replay?.event
-			&& created.replayRecord.replay.event_id
-			&& created.replayRecord.replay.phase
-			? {
-				event_id: created.replayRecord.replay.event_id,
-				event: created.replayRecord.replay.event,
-				phase: created.replayRecord.replay.phase,
-				request_id: created.replayRecord.replay.request_id,
-				command_id: created.replayRecord.replay.command_id,
-				requested_name: created.replayRecord.replay.requested_name,
-				member_target: created.replayRecord.replay.member_target,
-				spawn_task_id: created.replayRecord.replay.spawn_task_id,
-				activation: created.replayRecord.replay.activation,
-				delivery_state: created.replayRecord.replay.delivery_state,
-				hold_expires_at: created.replayRecord.replay.hold_expires_at,
-				error: created.replayRecord.replay.error,
-				reason: created.replayRecord.replay.reason,
-			}
-			: null;
+		replayedLifecycleEvent = toQueuedCrewReplayEvent(created.replayRecord?.replay);
 		if (created.replayed) {
 			return {
 				memberName: created.replayRecord?.member_name ?? internalName,
@@ -828,6 +843,16 @@ export async function queueCrewAdd(
 	const roomDir = activeRoom.roomDir;
 	const roomId = activeRoom.roomId;
 	const ownerName = activeRoom.memberName;
+	const lifecycleSeed = {
+		request_id: params.request_id ?? null,
+		requested_name: displayName,
+		member_target: internalName,
+		member_type: typedAgent.type,
+		room_id: roomId,
+		spawn_task_id: taskId,
+		activation,
+		metadata: params.metadata ?? null,
+	};
 
 	// Write initial task to board before spawning, so we can embed the message seq
 	// in the agent's first prompt. This avoids a race where the task is delivered
@@ -1175,7 +1200,25 @@ export async function queueCrewAdd(
 				model: effectiveModel,
 				completed,
 			});
-			// Spawn success: only log, no room notification.
+			const spawnedMember = await loadRoomMemberState(roomDir, internalName).catch(() => null);
+			const spawnedJob = await readSpawnJob(roomDir, taskId).catch(() => null);
+			const spawnedEvent = await emitCrewLifecycleEvent(
+				createCrewSpawnedLifecycleEvent({
+					...lifecycleSeed,
+					runtime_id: spawned.runtimeId,
+					delivery_state: computeSpawnDeliveryState(activation),
+					hold_expires_at: activation === "manual" ? holdExpiresAt : null,
+				}),
+			);
+			if (params.request_id) {
+				await persistCrewAddReplayEvent({
+					roomDir,
+					requestId: params.request_id,
+					event: spawnedEvent,
+					member: spawnedMember,
+					job: spawnedJob,
+				});
+			}
 
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
@@ -1319,6 +1362,25 @@ export async function queueCrewAdd(
 						}
 					}).catch((err) => log.error("spawn cleanup write failed", { memberName: internalName, error: String(err) }));
 				}
+
+			const failedMember = await loadRoomMemberState(roomDir, internalName).catch(() => existingMember);
+			const failedJob = await readSpawnJob(roomDir, taskId).catch(() => null);
+			const failedEvent = await emitCrewLifecycleEvent(
+				createCrewFailedLifecycleEvent({
+					...lifecycleSeed,
+					runtime_id: failedMember?.runtimeId ?? failedJob?.runtimeId ?? existingMember.runtimeId ?? null,
+					error: message,
+				}),
+			);
+			if (params.request_id) {
+				await persistCrewAddReplayEvent({
+					roomDir,
+					requestId: params.request_id,
+					event: failedEvent,
+					member: failedMember,
+					job: failedJob,
+				});
+			}
 
 			// Notify owner via board (skip for transient agents)
 			if (!transient) {

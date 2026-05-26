@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import type { CrewAddActivation } from "./types.ts";
 
 export type CrewDeliveryState = "pending" | "held" | "enabled" | "ended";
-export type CrewLifecyclePhase = "request" | "delivery";
-export type CrewLifecycleEventName = CrewDeliveryState | "rejected";
+export type CrewLifecyclePhase = "request" | "spawn" | "delivery";
+export type CrewLifecycleEventName = CrewDeliveryState | "rejected" | "spawned" | "failed";
 
 export interface CrewLifecycleEvent {
 	event_id: string;
@@ -13,8 +13,12 @@ export interface CrewLifecycleEvent {
 	command_id: string | null;
 	requested_name: string | null;
 	member_target: string | null;
+	member_type: string | null;
+	room_id: string | null;
 	spawn_task_id: string | null;
+	runtime_id: string | null;
 	activation: CrewAddActivation | null;
+	metadata: Record<string, unknown> | null;
 	delivery_state: CrewDeliveryState | null;
 	hold_expires_at: string | null;
 	error: string | null;
@@ -28,8 +32,12 @@ interface CrewLifecycleEventSeed {
 	command_id?: string | null;
 	requested_name?: string | null;
 	member_target?: string | null;
+	member_type?: string | null;
+	room_id?: string | null;
 	spawn_task_id?: string | null;
+	runtime_id?: string | null;
 	activation?: CrewAddActivation | null;
+	metadata?: Record<string, unknown> | null;
 	error?: string | null;
 	reason?: string | null;
 }
@@ -50,8 +58,12 @@ function normalizeLifecycleEvent(
 		command_id: input.command_id ?? null,
 		requested_name: input.requested_name ?? null,
 		member_target: input.member_target ?? null,
+		member_type: input.member_type ?? null,
+		room_id: input.room_id ?? null,
 		spawn_task_id: input.spawn_task_id ?? null,
+		runtime_id: input.runtime_id ?? null,
 		activation: input.activation ?? null,
+		metadata: input.metadata ?? null,
 		delivery_state: input.delivery_state ?? null,
 		hold_expires_at: input.hold_expires_at ?? null,
 		error: input.error ?? null,
@@ -105,8 +117,12 @@ function createCrewLifecycleEvent(
 		command_id: seed.command_id,
 		requested_name: seed.requested_name,
 		member_target: seed.member_target,
+		member_type: seed.member_type,
+		room_id: seed.room_id,
 		spawn_task_id: seed.spawn_task_id,
+		runtime_id: seed.runtime_id,
 		activation: seed.activation ?? null,
+		metadata: seed.metadata ?? null,
 		delivery_state,
 		hold_expires_at: overrides.hold_expires_at ?? null,
 		error: overrides.error ?? seed.error ?? null,
@@ -150,8 +166,61 @@ export function createCrewRejectedLifecycleEvent(
 		command_id: seed.command_id ?? null,
 		requested_name: seed.requested_name ?? null,
 		member_target: null,
+		member_type: null,
+		room_id: null,
 		spawn_task_id: null,
+		runtime_id: null,
 		activation: seed.activation ?? null,
+		metadata: null,
+		delivery_state: null,
+		hold_expires_at: null,
+		error: seed.error ?? null,
+		reason: seed.reason ?? null,
+	});
+}
+
+export function createCrewSpawnedLifecycleEvent(
+	seed: CrewLifecycleEventSeed & {
+		delivery_state?: CrewDeliveryState | null;
+		hold_expires_at?: string | null;
+	},
+): CrewLifecycleEventInput {
+	return normalizeLifecycleEvent({
+		event: "spawned",
+		phase: "spawn",
+		request_id: seed.request_id ?? null,
+		command_id: seed.command_id ?? null,
+		requested_name: seed.requested_name ?? null,
+		member_target: seed.member_target ?? null,
+		member_type: seed.member_type ?? null,
+		room_id: seed.room_id ?? null,
+		spawn_task_id: seed.spawn_task_id ?? null,
+		runtime_id: seed.runtime_id ?? null,
+		activation: seed.activation ?? null,
+		metadata: seed.metadata ?? null,
+		delivery_state: seed.delivery_state ?? null,
+		hold_expires_at: seed.hold_expires_at ?? null,
+		error: null,
+		reason: seed.reason ?? null,
+	});
+}
+
+export function createCrewFailedLifecycleEvent(
+	seed: CrewLifecycleEventSeed,
+): CrewLifecycleEventInput {
+	return normalizeLifecycleEvent({
+		event: "failed",
+		phase: "spawn",
+		request_id: seed.request_id ?? null,
+		command_id: seed.command_id ?? null,
+		requested_name: seed.requested_name ?? null,
+		member_target: seed.member_target ?? null,
+		member_type: seed.member_type ?? null,
+		room_id: seed.room_id ?? null,
+		spawn_task_id: seed.spawn_task_id ?? null,
+		runtime_id: seed.runtime_id ?? null,
+		activation: seed.activation ?? null,
+		metadata: seed.metadata ?? null,
 		delivery_state: null,
 		hold_expires_at: null,
 		error: seed.error ?? null,

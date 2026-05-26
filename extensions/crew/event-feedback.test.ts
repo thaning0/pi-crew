@@ -115,13 +115,15 @@ describe("crew:add request feedback", () => {
 		await flushAsyncWork();
 
 		expect(queueCrewAddMock).not.toHaveBeenCalled();
-		expect(crewEventPayloads(harness.emit)).toContainEqual(
-			expect.objectContaining({
-				event: "rejected",
-				phase: "request",
-				request_id: "req-invalid-shape",
-			}),
-		);
+		const [payload] = crewEventPayloads(harness.emit);
+		expect(payload).toMatchObject({
+			event: "rejected",
+			phase: "request",
+			request_id: "req-invalid-shape",
+		});
+		expect(payload?.member_target ?? null).toBeNull();
+		expect(payload?.spawn_task_id ?? null).toBeNull();
+		expect(payload).not.toHaveProperty("member_id");
 	});
 
 	it("emits rejected when project cwd has not been cached yet", async () => {

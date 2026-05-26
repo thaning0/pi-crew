@@ -11,8 +11,15 @@ export type RoomSpawnJobState =
 	| "timed_out_pending_member_claim"
 	| "failed"
 	| "cancelled";
-export type CrewReplayLifecyclePhase = "request" | "delivery";
-export type CrewReplayLifecycleEventName = "pending" | "held" | "enabled" | "ended" | "rejected";
+export type CrewReplayLifecyclePhase = "request" | "spawn" | "delivery";
+export type CrewReplayLifecycleEventName =
+	| "pending"
+	| "held"
+	| "enabled"
+	| "ended"
+	| "rejected"
+	| "spawned"
+	| "failed";
 export type CrewReplayDeliveryState = "pending" | "held" | "enabled" | "ended";
 export type RoomMessageKind = "task" | "info" | "question" | "completion" | "error" | "cancelled" | "progress";
 export type PendingTerminalReplyHandoffState = "snapshot_pending" | "snapshot_done" | "reply_appended" | "owner_handoff_done";
@@ -234,8 +241,12 @@ export interface CrewAddReplayableEvent {
 	command_id: string | null;
 	requested_name: string | null;
 	member_target: string | null;
+	member_type: string | null;
+	room_id: string | null;
 	spawn_task_id: string | null;
+	runtime_id: string | null;
 	activation: CrewAddActivation | null;
+	metadata: Record<string, unknown> | null;
 	delivery_state: CrewReplayDeliveryState | null;
 	hold_expires_at: string | null;
 	error: string | null;
@@ -250,15 +261,18 @@ export interface CrewAddReplayLifecycleSnapshot {
 	command_id: string | null;
 	requested_name: string | null;
 	member_target: string | null;
+	member_type: string | null;
+	room_id: string | null;
 	spawn_task_id: string | null;
+	runtime_id: string | null;
 	activation: CrewAddActivation | null;
+	metadata: Record<string, unknown> | null;
 	delivery_state: CrewReplayDeliveryState | null;
 	hold_expires_at: string | null;
 	error: string | null;
 	reason: string | null;
 	member_state: RoomMemberLifecycleState | null;
 	job_state: RoomSpawnJobState | null;
-	runtime_id: string | null;
 	updated_at: string;
 }
 
