@@ -833,20 +833,34 @@ function normalizeCrewAddReplaySeed(seed: CrewAddReplaySeed & {
 		task: seed.task?.trim() || null,
 		transient: seed.transient === true,
 		metadata: seed.metadata ?? null,
-		activation: seed.activation ?? null,
+		activation: seed.activation === "manual" ? "manual" : "immediate",
 		hold_timeout_ms: seed.hold_timeout_ms ?? seed.holdTimeoutMs ?? null,
+	};
+}
+
+function normalizeCrewAddReplayRecord(record: CrewAddReplayRecord): CrewAddReplayRecord {
+	return {
+		...record,
+		activation: record.activation === "manual" ? "manual" : "immediate",
+		replay: record.replay
+			? {
+				...record.replay,
+				activation: record.replay.activation === "manual" ? "manual" : "immediate",
+			}
+			: null,
 	};
 }
 
 function crewAddReplayMatches(record: CrewAddReplayRecord, seed: CrewAddReplaySeed): boolean {
 	const normalized = normalizeCrewAddReplaySeed(seed);
-	return record.material.requested_name === normalized.requested_name
-		&& record.material.type === normalized.type
-		&& record.material.model === normalized.model
-		&& record.material.task === normalized.task
-		&& record.material.transient === normalized.transient
-		&& record.activation === normalized.activation
-		&& record.hold_timeout_ms === normalized.hold_timeout_ms;
+	const normalizedRecord = normalizeCrewAddReplayRecord(record);
+	return normalizedRecord.material.requested_name === normalized.requested_name
+		&& normalizedRecord.material.type === normalized.type
+		&& normalizedRecord.material.model === normalized.model
+		&& normalizedRecord.material.task === normalized.task
+		&& normalizedRecord.material.transient === normalized.transient
+		&& normalizedRecord.activation === normalized.activation
+		&& normalizedRecord.hold_timeout_ms === normalized.hold_timeout_ms;
 }
 
 function deriveCrewAddReplayReason(member: RoomMemberState | null, job: RoomSpawnJob | null): string | null {
@@ -1114,7 +1128,9 @@ async function writeCrewAddRequestReplayFile(roomDir: string, record: CrewAddRep
 
 export async function readCrewAddRequestReplay(roomDir: string, requestId: string): Promise<CrewAddReplayRecord | null> {
 	try {
-		return await readJsonFile<CrewAddReplayRecord>(getCrewAddRequestReplayPath(roomDir, requestId));
+		return normalizeCrewAddReplayRecord(
+			await readJsonFile<CrewAddReplayRecord>(getCrewAddRequestReplayPath(roomDir, requestId)),
+		);
 	} catch {
 		return null;
 	}

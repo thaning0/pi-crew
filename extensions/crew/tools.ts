@@ -454,6 +454,12 @@ function markCrewAddPhase<T extends Error>(
 	return tagged;
 }
 
+function normalizeCrewAddReplayActivation(
+	activation: CrewAddReplayRecord["activation"] | QueuedCrewAddRequest["activation"],
+): "immediate" | "manual" {
+	return activation === "manual" ? "manual" : "immediate";
+}
+
 function crewAddReplayMatchesRequest(
 	record: CrewAddReplayRecord,
 	params: QueuedCrewAddRequest,
@@ -463,7 +469,7 @@ function crewAddReplayMatchesRequest(
 		&& record.material.model === (params.model?.trim() || null)
 		&& record.material.task === (params.task?.trim() || null)
 		&& record.material.transient === (params.transient === true && isNonEmptyString(params.task))
-		&& record.activation === (params.activation ?? null)
+		&& normalizeCrewAddReplayActivation(record.activation) === normalizeCrewAddReplayActivation(params.activation)
 		&& record.hold_timeout_ms === (params.hold_timeout_ms ?? null);
 }
 

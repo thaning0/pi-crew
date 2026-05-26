@@ -984,6 +984,88 @@ describe("Member identity helpers", () => {
 			});
 		});
 
+		it("treats omitted activation and explicit immediate as the same replay identity", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-request-replay-immediate-default",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				const readCrewAddRequestReplay = (storage as {
+					readCrewAddRequestReplay?: (roomDir: string, requestId: string) => Promise<any>;
+				}).readCrewAddRequestReplay;
+
+				const first = await createSpawningMember(created.roomDir, {
+					displayName: "worker",
+					type: "worker",
+					backend: "pi",
+					taskId: "spawn-request-immediate-default-1",
+					requestReplay: {
+						requestId: "req-immediate-default",
+						requestedName: "worker",
+						type: "worker",
+						model: null,
+						task: "same request",
+						transient: false,
+						metadata: { source: "first-call" },
+						activation: null,
+						holdTimeoutMs: null,
+					},
+				} as never);
+
+				await expect(readCrewAddRequestReplay?.(created.roomDir, "req-immediate-default")).resolves.toMatchObject({
+					request_id: "req-immediate-default",
+					activation: "immediate",
+				});
+
+				const replayed = await queueCrewAdd(
+					{
+						request_id: "req-immediate-default",
+						name: "worker",
+						type: "worker",
+						task: "same request",
+						activation: "immediate",
+						metadata: { source: "retry-call" },
+					},
+					{
+						activeRoom: {
+							role: "owner",
+							roomDir: created.roomDir,
+							roomId: created.metadata.roomId,
+							memberName: "owner",
+							sessionId: created.metadata.ownerSessionId,
+						} as any,
+						sessionId: created.metadata.ownerSessionId,
+						ctx: {
+							cwd: tempDir,
+							hasUI: false,
+						} as any,
+						adapters: {
+							pi: {
+								kind: "pi",
+								async spawn() {
+									throw new Error("immediate replay should not spawn");
+								},
+							},
+							paseo: {
+								kind: "paseo",
+								async spawn() {
+									throw new Error("immediate replay should not spawn");
+								},
+							},
+						},
+					} as never,
+				);
+
+				expect(replayed.replayed).toBe(true);
+				expect(replayed.taskId).toBe(first.job.taskId);
+				expect(replayed.activation).toBe("immediate");
+			});
+		});
+
 		it("rejects conflicting reuse of an existing request_id", async () => {
 			await withTempDir(async (tempDir) => {
 				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
