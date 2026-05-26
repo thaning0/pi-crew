@@ -75,17 +75,138 @@ import {
 	deleteRoomMutationClient,
 } from "./storage.ts";
 import { createRoomLogger, closeLogStream } from "./logger.ts";
-import type { RoomMessage, RoomSpawnAdapter } from "./types.ts";
+import type {
+	CrewAddActivation,
+	QueuedCrewAddRequest,
+	RoomMessage,
+	RoomSpawnAdapter,
+} from "./types.ts";
 import { createPaseoPiMemberAdapter, createPiMemberAdapter } from "./spawn.ts";
-import { setCrewEventEmitter } from "./integration-events.ts";
+import {
+	createCrewRejectedLifecycleEvent,
+	emitCrewLifecycleEvent,
+	setCrewEventEmitter,
+} from "./integration-events.ts";
 import {
 	ensureOwnerInfrastructure,
 	ensureOwnerRoom,
 	findOwnerRoomForRecovery,
 } from "./owner-room.ts";
+import { ValidationError } from "./errors.ts";
 
 export { resetActiveRoomsForTests } from "./lifecycle.ts";
 export * from "./integration-events.ts";
+
+const MAX_CREW_ADD_HOLD_TIMEOUT_MS = 2_147_483_647;
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+function readOptionalTrimmedString(value: unknown): string | undefined {
+	return typeof value === "string" ? value.trim() || undefined : undefined;
+}
+
+function readOptionalString(value: unknown): string | undefined {
+	return typeof value === "string" ? value : undefined;
+}
+
+function buildCrewAddRejectionSeed(rawData: unknown): {
+	request_id?: string;
+	requested_name?: string;
+	activation?: CrewAddActivation;
+} {
+	const record = isObjectRecord(rawData) ? rawData : null;
+	const activation = record?.activation;
+	return {
+		request_id: readOptionalString(record?.request_id),
+		requested_name: readOptionalTrimmedString(record?.name),
+		activation:
+			activation === "immediate" || activation === "manual"
+				? activation
+				: undefined,
+	};
+}
+
+function emitCrewAddRejected(
+	rawData: unknown,
+	detail: { error: string; reason: string },
+): void {
+	void emitCrewLifecycleEvent(
+		createCrewRejectedLifecycleEvent({
+			...buildCrewAddRejectionSeed(rawData),
+			error: detail.error,
+			reason: detail.reason,
+		}),
+	);
+}
+
+function normalizeCrewAddEventData(rawData: unknown): QueuedCrewAddRequest {
+	if (!isObjectRecord(rawData)) {
+		throw new ValidationError("Spawn requires non-empty name and type.");
+	}
+
+	const name = readOptionalTrimmedString(rawData.name);
+	const type = readOptionalTrimmedString(rawData.type);
+	if (!name || !type) {
+		throw new ValidationError("Spawn requires non-empty name and type.");
+	}
+	if (rawData.model !== undefined && typeof rawData.model !== "string") {
+		throw new ValidationError("model must be a string when provided.");
+	}
+	if (rawData.task !== undefined && typeof rawData.task !== "string") {
+		throw new ValidationError("task must be a string when provided.");
+	}
+	if (rawData.request_id !== undefined && typeof rawData.request_id !== "string") {
+		throw new ValidationError("request_id must be a string when provided.");
+	}
+
+	let activation: CrewAddActivation | undefined;
+	if (rawData.activation !== undefined) {
+		if (rawData.activation !== "immediate" && rawData.activation !== "manual") {
+			throw new ValidationError('activation must be "immediate" or "manual".');
+		}
+		activation = rawData.activation;
+	}
+
+	let hold_timeout_ms: number | undefined;
+	const rawHoldTimeout = rawData.hold_timeout_ms;
+	if (rawHoldTimeout !== undefined) {
+		if (
+			typeof rawHoldTimeout !== "number" ||
+			!Number.isInteger(rawHoldTimeout) ||
+			rawHoldTimeout <= 0 ||
+			rawHoldTimeout > MAX_CREW_ADD_HOLD_TIMEOUT_MS
+		) {
+			throw new ValidationError(
+				`hold_timeout_ms must be a positive integer no greater than ${MAX_CREW_ADD_HOLD_TIMEOUT_MS}.`,
+			);
+		}
+		if (activation === "manual") {
+			hold_timeout_ms = rawHoldTimeout;
+		}
+	}
+
+	let metadata: Record<string, unknown> | undefined;
+	if (rawData.metadata !== undefined) {
+		if (!isObjectRecord(rawData.metadata) || Array.isArray(rawData.metadata)) {
+			throw new ValidationError("metadata must be an object when provided.");
+		}
+		metadata = rawData.metadata;
+	}
+
+	return {
+		request_id: readOptionalString(rawData.request_id),
+		name,
+		type,
+		model: readOptionalTrimmedString(rawData.model),
+		task: readOptionalTrimmedString(rawData.task),
+		transient: rawData.transient === true || undefined,
+		activation,
+		hold_timeout_ms,
+		metadata,
+	};
+}
 
 
 /** Orchestrator-specific instructions, loaded once at module init. */
@@ -756,15 +877,6 @@ export default function roomExtension(
 
 	// ── Event data interfaces for extension-to-extension communication ──
 
-	/** Event data for crew:add — emitted by other extensions to spawn a sub-agent. */
-	interface CrewAddEventData {
-		name: string;       // agent alias (required)
-		type: string;       // agent role type (required)
-		model?: string;     // optional model override
-		task?: string;      // optional initial task content
-		transient?: boolean;// transient agent flag
-	}
-
 	/** Event data for crew:tell — emitted by other extensions to send a message
 	 *  to a crew member. Used for follow-up communication after spawn. */
 	interface CrewTellEventData {
@@ -778,23 +890,58 @@ export default function roomExtension(
 	// ── Programmatic event bus listeners (extension-to-extension comms) ──
 
 	pi.events.on("crew:add", (rawData: unknown) => {
-		const data = rawData as CrewAddEventData;
-		if (!data || typeof data.name !== "string" || !data.name.trim()
-			|| typeof data.type !== "string" || !data.type.trim()) {
+		let data: QueuedCrewAddRequest;
+		try {
+			data = normalizeCrewAddEventData(rawData);
+		} catch (error) {
+			const message =
+				error instanceof Error ? error.message : String(error);
+			createRoomLogger(null, "room").error(
+				message === "Spawn requires non-empty name and type."
+					? "crew:add rejected: missing name or type"
+					: "crew:add rejected: invalid request",
+				{
+					data: String(rawData),
+					error: message,
+				},
+			);
+			emitCrewAddRejected(rawData, {
+				error: message,
+				reason:
+					error instanceof ValidationError
+						? "invalid-request"
+						: "invalid-payload",
+			});
+			return;
+		}
+
+		if (!data.name || !data.type) {
 			createRoomLogger(null, "room").error("crew:add rejected: missing name or type", {
 				data: String(rawData),
+			});
+			emitCrewAddRejected(rawData, {
+				error: "Spawn requires non-empty name and type.",
+				reason: "invalid-request",
 			});
 			return;
 		}
 
 		if (!projectCwd) {
 			createRoomLogger(null, "room").error("crew:add rejected: projectCwd not cached (no session_start yet)");
+			emitCrewAddRejected(data, {
+				error: "projectCwd not cached (no session_start yet)",
+				reason: "project-cwd-unavailable",
+			});
 			return;
 		}
 
 		const ownerRoom = getActiveOwnerRoom();
 		if (!ownerRoom) {
 			createRoomLogger(null, "room").error("crew:add rejected: no active owner room");
+			emitCrewAddRejected(data, {
+				error: "no active owner room",
+				reason: "owner-room-unavailable",
+			});
 			return;
 		}
 
@@ -812,11 +959,7 @@ export default function roomExtension(
 			try {
 				await queueCrewAdd(
 					{
-						name: data.name.trim(),
-						type: data.type.trim(),
-						model: data.model?.trim() || undefined,
-						task: data.task?.trim() || undefined,
-						transient: data.transient === true || undefined,
+						...data,
 					},
 					{
 						activeRoom: ownerRoom,
@@ -830,6 +973,17 @@ export default function roomExtension(
 					error: err instanceof Error ? err.message : String(err),
 					agentName: data.name,
 				});
+				if ((err as { crewAddPhase?: string } | null)?.crewAddPhase === "request") {
+					await emitCrewLifecycleEvent(
+						createCrewRejectedLifecycleEvent({
+							request_id: data.request_id,
+							requested_name: data.name,
+							activation: data.activation,
+							error: err instanceof Error ? err.message : String(err),
+							reason: "pre-generation-validation",
+						}),
+					);
+				}
 			}
 		})();
 	});

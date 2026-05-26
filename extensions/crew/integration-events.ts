@@ -1,17 +1,21 @@
 import { createHash } from "node:crypto";
+import type { CrewAddActivation } from "./types.ts";
 
-export type CrewAddActivation = "immediate" | "manual";
 export type CrewDeliveryState = "pending" | "held" | "enabled" | "ended";
+export type CrewLifecyclePhase = "request" | "delivery";
+export type CrewLifecycleEventName = CrewDeliveryState | "rejected";
 
 export interface CrewLifecycleEvent {
 	event_id: string;
-	request_id: string;
-	command_id: string;
-	requested_name: string;
-	member_target: string;
-	spawn_task_id: string;
+	event: CrewLifecycleEventName;
+	phase: CrewLifecyclePhase;
+	request_id: string | null;
+	command_id: string | null;
+	requested_name: string | null;
+	member_target: string | null;
+	spawn_task_id: string | null;
 	activation: CrewAddActivation | null;
-	delivery_state: CrewDeliveryState;
+	delivery_state: CrewDeliveryState | null;
 	hold_expires_at: string | null;
 	error: string | null;
 	reason: string | null;
@@ -20,11 +24,11 @@ export interface CrewLifecycleEvent {
 export type CrewLifecycleEventInput = Omit<CrewLifecycleEvent, "event_id">;
 
 interface CrewLifecycleEventSeed {
-	request_id: string;
-	command_id: string;
-	requested_name: string;
-	member_target: string;
-	spawn_task_id: string;
+	request_id?: string | null;
+	command_id?: string | null;
+	requested_name?: string | null;
+	member_target?: string | null;
+	spawn_task_id?: string | null;
 	activation?: CrewAddActivation | null;
 	error?: string | null;
 	reason?: string | null;
@@ -40,13 +44,15 @@ function normalizeLifecycleEvent(
 	input: CrewLifecycleEventInput,
 ): CrewLifecycleEventInput {
 	return {
-		request_id: input.request_id,
-		command_id: input.command_id,
-		requested_name: input.requested_name,
-		member_target: input.member_target,
-		spawn_task_id: input.spawn_task_id,
+		event: input.event,
+		phase: input.phase,
+		request_id: input.request_id ?? null,
+		command_id: input.command_id ?? null,
+		requested_name: input.requested_name ?? null,
+		member_target: input.member_target ?? null,
+		spawn_task_id: input.spawn_task_id ?? null,
 		activation: input.activation ?? null,
-		delivery_state: input.delivery_state,
+		delivery_state: input.delivery_state ?? null,
 		hold_expires_at: input.hold_expires_at ?? null,
 		error: input.error ?? null,
 		reason: input.reason ?? null,
@@ -85,12 +91,16 @@ function buildCrewLifecycleEvent(
 
 function createCrewLifecycleEvent(
 	seed: CrewLifecycleEventSeed,
+	event: CrewLifecycleEventName,
+	phase: CrewLifecyclePhase,
 	delivery_state: CrewDeliveryState,
 	overrides: Partial<
 		Pick<CrewLifecycleEventInput, "hold_expires_at" | "error" | "reason">
 	> = {},
 ): CrewLifecycleEventInput {
 	return normalizeLifecycleEvent({
+		event,
+		phase,
 		request_id: seed.request_id,
 		command_id: seed.command_id,
 		requested_name: seed.requested_name,
@@ -107,13 +117,13 @@ function createCrewLifecycleEvent(
 export function createCrewPendingLifecycleEvent(
 	seed: CrewLifecycleEventSeed,
 ): CrewLifecycleEventInput {
-	return createCrewLifecycleEvent(seed, "pending");
+	return createCrewLifecycleEvent(seed, "pending", "delivery", "pending");
 }
 
 export function createCrewHeldLifecycleEvent(
 	seed: CrewLifecycleEventSeed & { hold_expires_at: string },
 ): CrewLifecycleEventInput {
-	return createCrewLifecycleEvent(seed, "held", {
+	return createCrewLifecycleEvent(seed, "held", "delivery", "held", {
 		hold_expires_at: seed.hold_expires_at,
 	});
 }
@@ -121,13 +131,32 @@ export function createCrewHeldLifecycleEvent(
 export function createCrewEnabledLifecycleEvent(
 	seed: CrewLifecycleEventSeed,
 ): CrewLifecycleEventInput {
-	return createCrewLifecycleEvent(seed, "enabled");
+	return createCrewLifecycleEvent(seed, "enabled", "delivery", "enabled");
 }
 
 export function createCrewEndedLifecycleEvent(
 	seed: CrewLifecycleEventSeed,
 ): CrewLifecycleEventInput {
-	return createCrewLifecycleEvent(seed, "ended");
+	return createCrewLifecycleEvent(seed, "ended", "delivery", "ended");
+}
+
+export function createCrewRejectedLifecycleEvent(
+	seed: CrewLifecycleEventSeed,
+): CrewLifecycleEventInput {
+	return normalizeLifecycleEvent({
+		event: "rejected",
+		phase: "request",
+		request_id: seed.request_id ?? null,
+		command_id: seed.command_id ?? null,
+		requested_name: seed.requested_name ?? null,
+		member_target: null,
+		spawn_task_id: null,
+		activation: seed.activation ?? null,
+		delivery_state: null,
+		hold_expires_at: null,
+		error: seed.error ?? null,
+		reason: seed.reason ?? null,
+	});
 }
 
 export function setCrewEventEmitter(

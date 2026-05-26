@@ -3,6 +3,7 @@ import {
 	createCrewEndedLifecycleEvent,
 	createCrewHeldLifecycleEvent,
 	createCrewPendingLifecycleEvent,
+	createCrewRejectedLifecycleEvent,
 	emitCrewLifecycleEvent,
 	setCrewEventEmitter,
 } from "./integration-events.ts";
@@ -24,6 +25,8 @@ describe("integration-events", () => {
 		});
 
 		expect(pending).toMatchObject({
+			event: "pending",
+			phase: "delivery",
 			request_id: "req-1",
 			command_id: "cmd-1",
 			requested_name: "worker",
@@ -48,6 +51,8 @@ describe("integration-events", () => {
 		});
 
 		expect(held.delivery_state).toBe("held");
+		expect(held.event).toBe("held");
+		expect(held.phase).toBe("delivery");
 		expect(held.hold_expires_at).toBe("2026-01-02T03:04:05.000Z");
 		expect(held.reason).toBe("awaiting-approval");
 
@@ -63,8 +68,31 @@ describe("integration-events", () => {
 		});
 
 		expect(ended.delivery_state).toBe("ended");
+		expect(ended.event).toBe("ended");
+		expect(ended.phase).toBe("delivery");
 		expect(ended.error).toBe("spawn failed");
 		expect(ended.reason).toBe("adapter-error");
+	});
+
+	it("creates request-time rejection envelopes without invented generation handles", () => {
+		const rejected = createCrewRejectedLifecycleEvent({
+			request_id: "req-6",
+			requested_name: "worker",
+			error: "invalid request",
+			reason: "invalid-request",
+		});
+
+		expect(rejected).toMatchObject({
+			event: "rejected",
+			phase: "request",
+			request_id: "req-6",
+			requested_name: "worker",
+			member_target: null,
+			spawn_task_id: null,
+			delivery_state: null,
+			error: "invalid request",
+			reason: "invalid-request",
+		});
 	});
 
 	it("generates a stable event_id in the shared emission path", async () => {

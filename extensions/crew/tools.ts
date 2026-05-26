@@ -73,6 +73,7 @@ import {
 } from "./lifecycle.ts";
 
 import type {
+	QueuedCrewAddRequest,
 	QueuedCrewAddResult,
 	QueuedCrewTellResult,
 	QueuedTaskHandle,
@@ -436,6 +437,16 @@ type QueueCrewAddOptions = {
 	batchContext?: QueueBatchContext;
 };
 
+type CrewAddFailurePhase = "request" | "spawn";
+
+function markCrewAddPhase<T extends Error>(
+	error: T,
+	phase: CrewAddFailurePhase,
+): T & { crewAddPhase: CrewAddFailurePhase } {
+	(error as T & { crewAddPhase: CrewAddFailurePhase }).crewAddPhase = phase;
+	return error as T & { crewAddPhase: CrewAddFailurePhase };
+}
+
 type QueueCrewTellOptions = {
 	activeRoom: ActiveRoomContext;
 	batchContext?: QueueBatchContext;
@@ -611,20 +622,32 @@ export async function resolveRoomAndSession(
 }
 
 export async function queueCrewAdd(
-	params: { name: string; type: string; model?: string; task?: string; transient?: boolean },
+	params: QueuedCrewAddRequest,
 	options: QueueCrewAddOptions,
 ): Promise<QueuedCrewAddResult> {
 	if (!isNonEmptyString(params.name) || !isNonEmptyString(params.type)) {
-		throw new ValidationError("Spawn requires non-empty name and type.");
+		throw markCrewAddPhase(
+			new ValidationError("Spawn requires non-empty name and type."),
+			"request",
+		);
 	}
 	if (!isValidRoomMemberName(params.name)) {
-		throw new ValidationError("Agent aliases must start with a letter or number and use only letters, numbers, hyphens, or underscores.");
+		throw markCrewAddPhase(
+			new ValidationError("Agent aliases must start with a letter or number and use only letters, numbers, hyphens, or underscores."),
+			"request",
+		);
 	}
 	if (options.activeRoom.role !== "owner") {
-		throw new Error("Only the lead may call create, spawn, stop, or remove.");
+		throw markCrewAddPhase(
+			new Error("Only the lead may call create, spawn, stop, or remove."),
+			"request",
+		);
 	}
 	if (params.transient === true && !isNonEmptyString(params.task)) {
-		throw new ValidationError("transient requires a task parameter.");
+		throw markCrewAddPhase(
+			new ValidationError("transient requires a task parameter."),
+			"request",
+		);
 	}
 
 	const { activeRoom, sessionId, ctx, adapters, batchContext } = options;
@@ -638,15 +661,26 @@ export async function queueCrewAdd(
 
 	const typedAgent = loadTypedRoomAgentDefinition(params.type, options.ctx.cwd);
 	if (!typedAgent) {
-		throw new ValidationError(`Agent type ${params.type} not found.`);
+		throw markCrewAddPhase(
+			new ValidationError(`Agent type ${params.type} not found.`),
+			"request",
+		);
 	}
 
 	const effectiveModel = params.model?.trim() || typedAgent.model || ctx.currentModel;
 	const effectiveThinkingLevel = typedAgent.thinking ?? ctx.currentThinkingLevel;
-	const adapter = await selectSpawnAdapter(
-		{ cwd: ctx.cwd, hasUI: ctx.hasUI, model: effectiveModel, sessionId },
-		adapters,
-	);
+	let adapter: RoomSpawnAdapter;
+	try {
+		adapter = await selectSpawnAdapter(
+			{ cwd: ctx.cwd, hasUI: ctx.hasUI, model: effectiveModel, sessionId },
+			adapters,
+		);
+	} catch (error) {
+		if (error instanceof Error) {
+			throw markCrewAddPhase(error, "request");
+		}
+		throw error;
+	}
 	let internalName: string;
 	let memberLabel: string;
 	try {
@@ -662,7 +696,9 @@ export async function queueCrewAdd(
 		internalName = created.member.name;
 		memberLabel = formatMemberLabel(created.member);
 	} catch (error) {
-		if (error instanceof ValidationError || error instanceof MemberAlreadyExistsError) throw error;
+		if (error instanceof Error) {
+			throw markCrewAddPhase(error, "request");
+		}
 		throw error;
 	}
 
@@ -1201,6 +1237,10 @@ export async function queueCrewAdd(
 		taskId,
 		backend: adapter.kind,
 		transient,
+		request_id: params.request_id,
+		activation: params.activation,
+		hold_timeout_ms: params.hold_timeout_ms,
+		metadata: params.metadata,
 		initialTask,
 		initialTaskBoardError,
 		unresolvedMentions: initialTaskUnresolvedMentions,
@@ -1219,7 +1259,7 @@ export async function executeCrewAdd(
 	const activeRoom = room ?? getActiveRoom(sessionId);
 	if (!activeRoom) return ownerRoomUnavailableError();
 	try {
-		const queued = await queueCrewAdd(rawParams as { name: string; type: string; model?: string; task?: string; transient?: boolean }, {
+		const queued = await queueCrewAdd(rawParams as QueuedCrewAddRequest, {
 			activeRoom,
 			sessionId,
 			ctx,

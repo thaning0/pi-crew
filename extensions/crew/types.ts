@@ -1,5 +1,6 @@
 export type RoomState = "creating" | "active" | "closing" | "orphaned" | "reaped";
 export type RoomBackend = "pi" | "paseo";
+export type CrewAddActivation = "immediate" | "manual";
 export type RoomMemberLifecycleState = "spawning" | "idle" | "running" | "stopping" | "error" | "removed";
 export type RoomSpawnJobState =
 	| "starting"
@@ -196,12 +197,28 @@ export interface QueuedCrewTellResult {
 	unresolvedMentions: string[];
 }
 
+export interface QueuedCrewAddRequest {
+	name: string;
+	type: string;
+	model?: string;
+	task?: string;
+	transient?: boolean;
+	request_id?: string;
+	activation?: CrewAddActivation;
+	hold_timeout_ms?: number;
+	metadata?: Record<string, unknown>;
+}
+
 export interface QueuedCrewAddResult {
 	memberName: string;
 	memberLabel: string;
 	taskId: string;
 	backend: RoomBackend;
 	transient: boolean;
+	request_id?: string;
+	activation?: CrewAddActivation;
+	hold_timeout_ms?: number;
+	metadata?: Record<string, unknown>;
 	initialTask?: QueuedTaskHandle;
 	initialTaskBoardError?: string;
 	unresolvedMentions: string[];
