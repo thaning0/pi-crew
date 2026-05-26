@@ -8,6 +8,9 @@ export const CREW_BATCH_TEMPLATE_REGISTRY = {
 	"implement-review-loop": {
 		description: "Run an implementation author plus reviewer loop until pass or round exhaustion.",
 	},
+	"review-fix-loop": {
+		description: "Run a reviewer-first loop where the reviewer examines an existing artifact and the fixer resolves issues.",
+	},
 } as const;
 
 export type CrewBatchTemplateName = keyof typeof CREW_BATCH_TEMPLATE_REGISTRY;

@@ -119,7 +119,7 @@ type ReviewLoopTemplateConfig = {
 };
 
 type ReviewLoopParticipantResult = {
-	role: "author" | "reviewer";
+	role: "author" | "reviewer" | "fixer";
 	participant: ReviewLoopParticipant;
 	queued?: QueuedCrewAddResult;
 	queueError?: string;
@@ -132,6 +132,22 @@ type ReviewLoopRoundResult = {
 	authorReply: TaskTerminalWaitResult;
 	reviewerTasks: QueuedTaskHandle[];
 	reviewerReplies: TaskTerminalWaitResult[];
+};
+
+type ReviewFixLoopParams = {
+	reviewer: ReviewLoopParticipant;
+	fixer: ReviewLoopParticipant;
+	initialReviewTask: string;
+	maxRounds: number;
+};
+
+type ReviewFixLoopRoundResult = {
+	round: number;
+	kind: "review" | "fix-review";
+	reviewerTask?: QueuedTaskHandle;
+	reviewerReply?: TaskTerminalWaitResult;
+	fixerTask?: QueuedTaskHandle;
+	fixerReply?: TaskTerminalWaitResult;
 };
 
 function delay(ms: number): Promise<void> {
@@ -412,6 +428,23 @@ function parseReviewLoopParams(
 	};
 }
 
+function parseReviewFixLoopParams(
+	params: Record<string, unknown>,
+): ReviewFixLoopParams {
+	assertAllowedTemplateParamKeys("review-fix-loop", params, ["reviewer", "fixer", "initialReviewTask", "maxRounds"]);
+	const reviewer = parseReviewLoopParticipant(params.reviewer, "review-fix-loop reviewer");
+	const fixer = parseReviewLoopParticipant(params.fixer, "review-fix-loop fixer");
+	if (!isNonEmptyString(params.initialReviewTask)) {
+		throw new ValidationError("review-fix-loop requires a non-empty initialReviewTask.");
+	}
+	return {
+		reviewer,
+		fixer,
+		initialReviewTask: params.initialReviewTask,
+		maxRounds: parseOptionalPositiveNumber(params.maxRounds, "review-fix-loop maxRounds") ?? 3,
+	};
+}
+
 function summarizeMemberResult(result?: MemberReadyWaitResult): string {
 	if (!result) {
 		return "member=not-queued";
@@ -540,6 +573,33 @@ function buildRevisionTaskContent(
 	].join("\n");
 }
 
+function buildFixerTaskContent(reviewerFeedback: string): string {
+	return [
+		"Fix the issues identified in the review.",
+		"Address all reviewer feedback in your fix.",
+		"",
+		`Reviewer feedback: ${reviewerFeedback}`,
+	].join("\n");
+}
+
+function buildReviewFixReviewerTaskContent(
+	round: number,
+	fixerReply: TaskTerminalWaitResult,
+	originalFeedback: string,
+): string {
+	return [
+		`Review the fix for round ${round}.`,
+		"Return an explicit verdict envelope with crew_reply(kind=\"completion\", ...).",
+		"- Pass: crew_reply(kind=\"completion\", summary=\"VERDICT: PASS — <short reason>\", content=\"<full review notes>\")",
+		"- Fail: crew_reply(kind=\"completion\", summary=\"VERDICT: FAIL — <short reason>\", content=\"<full review notes>\")",
+		"Use error/cancelled only when the review could not be completed; error/cancelled means review execution failed, not rejection.",
+		"A missing or malformed verdict is a protocol failure.",
+		"",
+		`Fixer output: ${formatReplySummary(fixerReply.reply)}`,
+		`Original review feedback: ${originalFeedback}`,
+	].join("\n");
+}
+
 function formatReadyLine(result: ReviewLoopParticipantResult): string {
 	if (result.queueError) {
 		return `${result.role}: queue-failed (${result.queueError})`;
@@ -558,6 +618,27 @@ function formatRoundLines(result: ReviewLoopRoundResult): string[] {
 	for (const reviewerReply of result.reviewerReplies) {
 		lines.push(
 			`round ${result.round} reviewer ${reviewerReply.handle.targetName}: ${summarizeReviewOutcome(reviewerReply)} (${reviewerReply.reply ? formatReplySummary(reviewerReply.reply) : reviewerReply.detail ?? reviewerReply.state})`,
+		);
+	}
+	return lines;
+}
+
+function formatReviewFixRoundLines(result: ReviewFixLoopRoundResult): string[] {
+	if (result.kind === "review") {
+		const reviewer = result.reviewerReply!;
+		return [
+			`round ${result.round} reviewer: ${reviewer.state} (${reviewer.reply ? formatReplySummary(reviewer.reply) : reviewer.detail ?? reviewer.state})`,
+		];
+	}
+	const lines: string[] = [];
+	if (result.fixerReply) {
+		lines.push(
+			`round ${result.round} fixer: ${result.fixerReply.state} (${result.fixerReply.reply ? formatReplySummary(result.fixerReply.reply) : result.fixerReply.detail ?? result.fixerReply.state})`,
+		);
+	}
+	if (result.reviewerReply) {
+		lines.push(
+			`round ${result.round} reviewer: ${summarizeReviewOutcome(result.reviewerReply)} (${result.reviewerReply.reply ? formatReplySummary(result.reviewerReply.reply) : result.reviewerReply.detail ?? result.reviewerReply.state})`,
 		);
 	}
 	return lines;
@@ -585,6 +666,31 @@ function renderReviewLoopResult(
 	}
 	return textResult(
 		formatBatchText(template, lines),
+		options.status !== "passed",
+	);
+}
+
+function renderReviewFixLoopResult(
+	options: {
+		status: "passed" | "ready-timeout" | "reply-timeout" | "review-execution-failed" | "max-rounds-exhausted" | "protocol-failed" | "setup-failed";
+		maxRounds: number;
+		finalRound: number;
+		participants: ReadonlyArray<ReviewLoopParticipantResult>;
+		rounds: ReadonlyArray<ReviewFixLoopRoundResult>;
+		detail?: string;
+	},
+): { content: Array<{ type: "text"; text: string }>; isError?: true } {
+	const lines = [
+		`status: ${options.status}`,
+		`rounds: ${options.finalRound}/${options.maxRounds}`,
+		...options.participants.map(formatReadyLine),
+		...options.rounds.flatMap(formatReviewFixRoundLines),
+	];
+	if (options.detail) {
+		lines.push(`detail: ${options.detail}`);
+	}
+	return textResult(
+		formatBatchText("review-fix-loop", lines),
 		options.status !== "passed",
 	);
 }
@@ -974,6 +1080,324 @@ async function executeReviewLoop(
 	});
 }
 
+async function executeReviewFixLoop(
+	params: Record<string, unknown>,
+	activeRoom: Awaited<ReturnType<typeof resolveAccessibleRoom>>,
+	ctx: RoomExecCtx,
+	adapters: { pi: RoomSpawnAdapter; paseo: RoomSpawnAdapter },
+	batchContext: CrewBatchContext,
+): Promise<CrewBatchToolResult> {
+	if (!activeRoom) {
+		return textResult("No active room for this session.", true);
+	}
+	const parsed = parseReviewFixLoopParams(params);
+	const participants: ReviewLoopParticipantResult[] = [];
+
+	// ── Queue participants ─────────────────────────────────
+	for (const entry of [
+		{ role: "reviewer" as const, participant: parsed.reviewer },
+		{ role: "fixer" as const, participant: parsed.fixer },
+	]) {
+		try {
+			const existingIdle = await findIdleMemberByAlias(
+				activeRoom.roomDir,
+				entry.participant.name,
+				entry.participant.type,
+			);
+			if (existingIdle) {
+				participants.push({
+					role: entry.role,
+					participant: entry.participant,
+					queued: {
+						memberName: existingIdle.name,
+						memberLabel: formatMemberLabel(existingIdle),
+						backend: existingIdle.backend,
+						taskId: existingIdle.spawnTaskId ?? "",
+						transient: false,
+						initialTask: undefined,
+						unresolvedMentions: [],
+					},
+				});
+				continue;
+			}
+			const queued = await queueCrewAdd(entry.participant, {
+				activeRoom,
+				sessionId: activeRoom.sessionId,
+				ctx,
+				adapters,
+				batchContext,
+			});
+			participants.push({
+				role: entry.role,
+				participant: entry.participant,
+				queued,
+			});
+		} catch (error) {
+			participants.push({
+				role: entry.role,
+				participant: entry.participant,
+				queueError: error instanceof Error ? error.message : String(error),
+			});
+			return renderReviewFixLoopResult({
+				status: "setup-failed",
+				maxRounds: parsed.maxRounds,
+				finalRound: 0,
+				participants,
+				rounds: [],
+				detail: `${entry.role} ${entry.participant.name} could not be queued`,
+			});
+		}
+	}
+
+	// ── Wait for members ready ────────────────────────────
+	const readyResults = await waitForMembersReady(
+		activeRoom.roomDir,
+		participants
+			.filter((p): p is ReviewLoopParticipantResult & { queued: QueuedCrewAddResult } => Boolean(p.queued))
+			.map((p) => ({ memberName: p.queued.memberName, memberLabel: p.queued.memberLabel })),
+	);
+	const readyByName = new Map(readyResults.map((r) => [r.handle.memberName, r] as const));
+	for (const p of participants) {
+		if (p.queued) {
+			p.ready = readyByName.get(p.queued.memberName);
+		}
+	}
+
+	const unready = participants.find((p) => p.ready?.state !== "ready");
+	if (unready) {
+		return renderReviewFixLoopResult({
+			status: "ready-timeout",
+			maxRounds: parsed.maxRounds,
+			finalRound: 0,
+			participants,
+			rounds: [],
+			detail: `${unready.role} ${unready.participant.name} did not become ready`,
+		});
+	}
+
+	const reviewer = participants.find((p): p is ReviewLoopParticipantResult & { queued: QueuedCrewAddResult } =>
+		p.role === "reviewer" && Boolean(p.queued));
+	const fixer = participants.find((p): p is ReviewLoopParticipantResult & { queued: QueuedCrewAddResult } =>
+		p.role === "fixer" && Boolean(p.queued));
+	if (!reviewer?.queued || !fixer?.queued) {
+		return renderReviewFixLoopResult({
+			status: "setup-failed",
+			maxRounds: parsed.maxRounds,
+			finalRound: 0,
+			participants,
+			rounds: [],
+			detail: "reviewer or fixer handle was not created",
+		});
+	}
+
+	const rounds: ReviewFixLoopRoundResult[] = [];
+
+	// ── Round 1: reviewer reviews existing artifact ────────
+	const r1Task = await queueCrewTell(
+		{
+			to: reviewer.queued.memberName,
+			kind: "task",
+			summary: "Review task round 1",
+			content: parsed.initialReviewTask,
+		},
+		{ activeRoom, batchContext },
+	);
+	const [r1Reply] = await waitForTaskTerminalReplies(
+		activeRoom.roomDir,
+		[toTaskHandle(r1Task.message)],
+	);
+
+	const round1Result: ReviewFixLoopRoundResult = {
+		round: 1,
+		kind: "review",
+		reviewerTask: toTaskHandle(r1Task.message),
+		reviewerReply: r1Reply,
+	};
+	rounds.push(round1Result);
+
+	// Check reviewer reply is terminal (completion/error/cancelled)
+	if (r1Reply.state !== "completion") {
+		return renderReviewFixLoopResult({
+			status: "reply-timeout",
+			maxRounds: parsed.maxRounds,
+			finalRound: 1,
+			participants,
+			rounds,
+			detail: `reviewer round 1 ended with ${r1Reply.state}`,
+		});
+	}
+
+	const r1Outcome = summarizeReviewOutcome(r1Reply);
+	if (r1Outcome === "pass") {
+		return renderReviewFixLoopResult({
+			status: "passed",
+			maxRounds: parsed.maxRounds,
+			finalRound: 1,
+			participants,
+			rounds,
+		});
+	}
+
+	if (r1Outcome === "protocol-failure") {
+		return renderReviewFixLoopResult({
+			status: "protocol-failed",
+			maxRounds: parsed.maxRounds,
+			finalRound: 1,
+			participants,
+			rounds,
+			detail: getReviewerVerdictProtocolFailureDetail(r1Reply, 1),
+		});
+	}
+
+	// r1Outcome is "needs-revision". "execution-failure" is unreachable here
+	// because r1Reply.state !== "completion" was already caught above.
+	if (r1Outcome === "execution-failure") { // unreachable
+		return renderReviewFixLoopResult({
+			status: "review-execution-failed",
+			maxRounds: parsed.maxRounds,
+			finalRound: 1,
+			participants,
+			rounds,
+			detail: `reviewer round 1 ended with execution failure`,
+		});
+	}
+
+	if (parsed.maxRounds === 1) {
+		return renderReviewFixLoopResult({
+			status: "max-rounds-exhausted",
+			maxRounds: parsed.maxRounds,
+			finalRound: 1,
+			participants,
+			rounds,
+			detail: `crew_batch template "review-fix-loop" exhausted 1 round with a rejected review`,
+		});
+	}
+
+	// ── Rounds 2..N: fix → review cycles ──────────────────
+	let lastReviewerFeedback = formatReplySummary(r1Reply.reply);
+
+	for (let round = 2; round <= parsed.maxRounds; round += 1) {
+		// Fixer phase
+		const fixerTask = await queueCrewTell(
+			{
+				to: fixer.queued.memberName,
+				kind: "task",
+				summary: `Fix task round ${round}`,
+				content: buildFixerTaskContent(lastReviewerFeedback),
+			},
+			{ activeRoom, batchContext },
+		);
+		const [fixerReply] = await waitForTaskTerminalReplies(
+			activeRoom.roomDir,
+			[toTaskHandle(fixerTask.message)],
+		);
+
+		if (fixerReply.state !== "completion") {
+			const roundResult: ReviewFixLoopRoundResult = {
+				round,
+				kind: "fix-review",
+				fixerTask: toTaskHandle(fixerTask.message),
+				fixerReply,
+			};
+			rounds.push(roundResult);
+			return renderReviewFixLoopResult({
+				status: "reply-timeout",
+				maxRounds: parsed.maxRounds,
+				finalRound: round,
+				participants,
+				rounds,
+				detail: `fixer round ${round} ended with ${fixerReply.state}`,
+			});
+		}
+
+		// Reviewer phase
+		const reviewerContent = buildReviewFixReviewerTaskContent(
+			round,
+			fixerReply,
+			lastReviewerFeedback,
+		);
+		const reviewerTask = await queueCrewTell(
+			{
+				to: reviewer.queued.memberName,
+				kind: "task",
+				summary: `Review fix round ${round}`,
+				content: reviewerContent,
+			},
+			{ activeRoom, batchContext },
+		);
+		const [reviewerReply] = await waitForTaskTerminalReplies(
+			activeRoom.roomDir,
+			[toTaskHandle(reviewerTask.message)],
+		);
+
+		const roundResult: ReviewFixLoopRoundResult = {
+			round,
+			kind: "fix-review",
+			reviewerTask: toTaskHandle(reviewerTask.message),
+			reviewerReply,
+			fixerTask: toTaskHandle(fixerTask.message),
+			fixerReply,
+		};
+		rounds.push(roundResult);
+
+		if (reviewerReply.state !== "completion") {
+			return renderReviewFixLoopResult({
+				status: "reply-timeout",
+				maxRounds: parsed.maxRounds,
+				finalRound: round,
+				participants,
+				rounds,
+				detail: `reviewer round ${round} ended with ${reviewerReply.state}`,
+			});
+		}
+
+		const outcome = summarizeReviewOutcome(reviewerReply);
+		if (outcome === "pass") {
+			return renderReviewFixLoopResult({
+				status: "passed",
+				maxRounds: parsed.maxRounds,
+				finalRound: round,
+				participants,
+				rounds,
+			});
+		}
+
+		if (outcome === "protocol-failure") {
+			return renderReviewFixLoopResult({
+				status: "protocol-failed",
+				maxRounds: parsed.maxRounds,
+				finalRound: round,
+				participants,
+				rounds,
+				detail: getReviewerVerdictProtocolFailureDetail(reviewerReply, round),
+			});
+		}
+
+		if (round === parsed.maxRounds) {
+			return renderReviewFixLoopResult({
+				status: "max-rounds-exhausted",
+				maxRounds: parsed.maxRounds,
+				finalRound: round,
+				participants,
+				rounds,
+				detail: `crew_batch template "review-fix-loop" exhausted ${parsed.maxRounds} rounds at round ${round} with final rejection`,
+			});
+		}
+
+		lastReviewerFeedback = formatReplySummary(reviewerReply.reply);
+	}
+
+	// Should never reach here
+	return renderReviewFixLoopResult({
+		status: "max-rounds-exhausted",
+		maxRounds: parsed.maxRounds,
+		finalRound: parsed.maxRounds,
+		participants,
+		rounds,
+		detail: `crew_batch template "review-fix-loop" exhausted rounds without a terminal verdict`,
+	});
+}
+
 function parseCrewBatchParams(rawParams: unknown): {
 	template: CrewBatchTemplateName;
 	params: Record<string, unknown>;
@@ -1062,6 +1486,8 @@ async function runCrewBatchTemplate(
 				reviewerSummaryLabel: "Implementation review task",
 				revisionSummaryLabel: "Implementation revision",
 			}, params, activeRoom, ctx, adapters, batchContext);
+		case "review-fix-loop":
+			return await executeReviewFixLoop(params, activeRoom, ctx, adapters, batchContext);
 		default: {
 			const exhaustive: never = template;
 			throw new Error(`Unsupported crew_batch template: ${String(exhaustive)}`);
