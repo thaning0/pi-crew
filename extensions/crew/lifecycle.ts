@@ -779,7 +779,7 @@ export async function processUnreadMessages(
 				replyTo: taskMsg.id,
 				kind: "info",
 				summary: `Starting: ${taskMsg.summary}`,
-				silent: taskMsg.batchId ? true : undefined,
+				silent: true,
 				broadcast: false,
 			}).catch((err) =>
 				log.error("auto-confirm failed", { error: String(err) }),
