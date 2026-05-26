@@ -428,7 +428,7 @@ function parseReviewLoopParams(
 	};
 }
 
-function parseReviewFixLoopParams(
+export function parseReviewFixLoopParams(
 	params: Record<string, unknown>,
 ): ReviewFixLoopParams {
 	assertAllowedTemplateParamKeys("review-fix-loop", params, ["reviewer", "fixer", "initialReviewTask", "maxRounds"]);
@@ -1080,7 +1080,7 @@ async function executeReviewLoop(
 	});
 }
 
-async function executeReviewFixLoop(
+export async function executeReviewFixLoop(
 	params: Record<string, unknown>,
 	activeRoom: Awaited<ReturnType<typeof resolveAccessibleRoom>>,
 	ctx: RoomExecCtx,
