@@ -915,17 +915,6 @@ export default function roomExtension(
 			return;
 		}
 
-		if (!data.name || !data.type) {
-			createRoomLogger(null, "room").error("crew:add rejected: missing name or type", {
-				data: String(rawData),
-			});
-			emitCrewAddRejected(rawData, {
-				error: "Spawn requires non-empty name and type.",
-				reason: "invalid-request",
-			});
-			return;
-		}
-
 		if (!projectCwd) {
 			createRoomLogger(null, "room").error("crew:add rejected: projectCwd not cached (no session_start yet)");
 			emitCrewAddRejected(data, {

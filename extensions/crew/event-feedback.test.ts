@@ -146,13 +146,13 @@ describe("crew:add request feedback", () => {
 		);
 	});
 
-	it("emits rejected for invalid activation without invented generation handles", async () => {
+	it("echoes request_id verbatim in invalid-activation request rejection without invented generation handles", async () => {
 		const harness = createHarness();
 		await cacheProjectCwd(harness.lifecycleHandlers);
 		setOwnerRoom();
 
 		harness.eventHandlers.get("crew:add")?.({
-			request_id: "req-bad-activation",
+			request_id: "  req-bad-activation  ",
 			name: " worker ",
 			type: "builder",
 			activation: "later",
@@ -164,7 +164,7 @@ describe("crew:add request feedback", () => {
 		expect(payload).toMatchObject({
 			event: "rejected",
 			phase: "request",
-			request_id: "req-bad-activation",
+			request_id: "  req-bad-activation  ",
 			requested_name: "worker",
 		});
 		expect(payload?.member_target ?? null).toBeNull();
