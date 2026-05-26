@@ -5,3 +5,17 @@ package-lock.json
 docs
 
 node_modules
+
+# repowise API keys (local)
+.repowise/.env
+# Added by code-review-graph
+.code-review-graph/
+
+.mcp.json
+
+AGENTS.md
+
+.github
+
+.repowise
+.code-review-graph
