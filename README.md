@@ -229,7 +229,18 @@ crew_batch {
 
 Code → Review → Feedback → Revise → Review, until approved or max rounds.
 
-### Pattern 4: Auto-Handoff Chain
+### Pattern 4: Review-Fix Loop
+
+```bash
+crew_batch {
+  template: "review-fix-loop",
+  params: { reviewer: ..., fixer: ..., initialReviewTask: ..., maxRounds: 3 }
+}
+```
+
+Reviewer examines existing artifact (design doc, code diff, implementation result) → fixer addresses issues → re-review, until approved or max rounds.
+
+### Pattern 5: Auto-Handoff Chain
 
 ```bash
 crew_tell { to: "scout", kind: "task", content: "Investigate the auth module. @planner when done." }

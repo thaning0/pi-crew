@@ -227,7 +227,18 @@ crew_batch {
 
 写代码 → 审查 → 反馈 → 修订 → 再审查,直到通过或达到最大轮数。
 
-### 模式 4:自动接力链
+### 模式 4:审查修复循环
+
+```bash
+crew_batch {
+  template: "review-fix-loop",
+  params: { reviewer: ..., fixer: ..., initialReviewTask: ..., maxRounds: 3 }
+}
+```
+
+审查者先检查已有产物（设计文档、代码 diff、实现结果等）→ 修复者处理问题 → 再审,直到通过或达到最大轮数。
+
+### 模式 5:自动接力链
 
 ```bash
 crew_tell { to: "scout", kind: "task", content: "调研认证模块。完成后 @planner 汇报" }
