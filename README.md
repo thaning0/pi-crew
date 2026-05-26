@@ -162,6 +162,35 @@ Both plugins are registered automatically on install — no configuration needed
 
 ---
 
+## Event-Driven
+
+crew tools can be triggered **programmatically** via Pi's `pi.events` event bus — not just by the LLM. Other Pi extensions can spawn sub-agents or send messages through events without going through the model.
+
+```typescript
+// In any Pi extension
+pi.events.emit("crew:add", {
+    name: "worker-01",
+    type: "worker",
+    task: "Implement the login module",
+});
+
+pi.events.emit("crew:tell", {
+    to: "worker-01",
+    summary: "Plan update",
+    content: "Switch to JWT approach",
+    kind: "info",
+});
+```
+
+| Event | Parameters | Description |
+|-------|-----------|-------------|
+| `crew:add` | `name`, `type`, `task?`, `model?`, `transient?` | Spawn a sub-agent (cwd auto-cached from session) |
+| `crew:tell` | `summary` (required), `to?`, `content?`, `kind?`, `broadcast?` | Send a message (kind defaults to `"info"`) |
+
+Errors are silent: invalid data or missing owner room are logged without throwing or blocking the event bus.
+
+---
+
 ## Collaboration Patterns
 
 ### Pattern 1: Serial Pipeline

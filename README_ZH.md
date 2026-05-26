@@ -160,6 +160,35 @@ pi-crew 附带两个轻量插件，帮助子智能体更高效地协调工作：
 
 ---
 
+## 事件驱动
+
+crew 的工具不仅可由 LLM 调用，还支持通过 Pi 的 `pi.events` 事件总线**程序化触发**。其他 Pi 扩展可通过事件来创建子智能体或发送消息，无需经过 LLM。
+
+```typescript
+// 在任意 Pi 扩展中
+pi.events.emit("crew:add", {
+    name: "worker-01",
+    type: "worker",
+    task: "实现登录模块",
+});
+
+pi.events.emit("crew:tell", {
+    to: "worker-01",
+    summary: "方案更新",
+    content: "改用 JWT 方案",
+    kind: "info",
+});
+```
+
+| 事件 | 参数 | 说明 |
+|------|------|------|
+| `crew:add` | `name`, `type`, `task?`, `model?`, `transient?` | 创建子智能体（cwd 自动从 session 缓存） |
+| `crew:tell` | `summary` (必填), `to?`, `content?`, `kind?`, `broadcast?` | 发送消息（kind 默认 `"info"`） |
+
+错误静默处理：非法参数或无 owner room 时记录日志，不抛异常、不阻塞事件总线。
+
+---
+
 ## 协作模式
 
 ### 模式 1:串行流水线
