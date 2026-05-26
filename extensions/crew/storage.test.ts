@@ -1763,6 +1763,63 @@ describe("Member identity helpers", () => {
 			});
 		});
 
+		it("replays an identical command_id even when the original outcome was unknown-generation failure", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-control-unknown-replay",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				const applyCrewControlCommand = (storage as {
+					applyCrewControlCommand?: (options: {
+						roomDir: string;
+						verb: "release" | "abort";
+						spawnTaskId: string;
+						commandId?: string;
+						requestId?: string;
+						reason?: string;
+					}) => Promise<any>;
+				}).applyCrewControlCommand;
+				expect(applyCrewControlCommand).toBeTypeOf("function");
+
+				const first = await applyCrewControlCommand?.({
+					roomDir: created.roomDir,
+					verb: "release",
+					spawnTaskId: "spawn-control-unknown-replay",
+					commandId: "unknown-command-id",
+					requestId: "req-control-unknown-replay-first",
+				});
+				expect(first).toMatchObject({
+					event: "failed",
+					phase: "activation",
+					reason: "unknown-generation",
+					command_id: "unknown-command-id",
+					request_id: "req-control-unknown-replay-first",
+					spawn_task_id: "spawn-control-unknown-replay",
+				});
+
+				const replayed = await applyCrewControlCommand?.({
+					roomDir: created.roomDir,
+					verb: "release",
+					spawnTaskId: "spawn-control-unknown-replay",
+					commandId: "unknown-command-id",
+					requestId: "req-control-unknown-replay-second",
+				});
+				expect(replayed).toMatchObject({
+					event_id: first?.event_id,
+					event: "failed",
+					phase: "activation",
+					reason: "unknown-generation",
+					command_id: "unknown-command-id",
+					request_id: "req-control-unknown-replay-first",
+					spawn_task_id: "spawn-control-unknown-replay",
+				});
+			});
+		});
+
 		it("persists explicit aborted delivery metadata for control aborts", async () => {
 			await withTempDir(async (tempDir) => {
 				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
@@ -1852,6 +1909,212 @@ describe("Member identity helpers", () => {
 				});
 				expect(typeof persisted?.replay?.delivery?.aborted_at).toBe("string");
 				expect(typeof persisted?.replay?.delivery?.ended_at).toBe("string");
+			});
+		});
+
+		it("replays activated for later same-verb release retries after activation", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-control-release-retry",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				const applyCrewControlCommand = (storage as {
+					applyCrewControlCommand?: (options: {
+						roomDir: string;
+						verb: "release" | "abort";
+						spawnTaskId: string;
+						commandId?: string;
+						requestId?: string;
+						reason?: string;
+					}) => Promise<any>;
+				}).applyCrewControlCommand;
+				const readCrewControlReplay = (storage as {
+					readCrewControlReplay?: (roomDir: string, options: {
+						verb: "release" | "abort";
+						spawnTaskId: string;
+						commandId: string;
+					}) => Promise<any>;
+				}).readCrewControlReplay;
+				expect(applyCrewControlCommand).toBeTypeOf("function");
+				expect(readCrewControlReplay).toBeTypeOf("function");
+
+				await createSpawningMember(created.roomDir, {
+					name: "release-retry-worker",
+					displayName: "release-retry-worker",
+					type: "worker",
+					backend: "pi",
+					taskId: "spawn-control-release-retry",
+					bootstrapToken: "bootstrap-control-release-retry",
+					requestReplay: {
+						requestId: "req-control-release-retry",
+						requestedName: "release-retry-worker",
+						type: "worker",
+						model: null,
+						task: null,
+						transient: false,
+						metadata: { source: "control-release-retry" },
+						activation: "manual",
+						holdTimeoutMs: 45_000,
+					},
+				} as never);
+				await markMemberJoined({
+					bootstrap: {
+						version: 1,
+						roomId: created.metadata.roomId,
+						roomDir: created.roomDir,
+						memberName: "release-retry-worker",
+						memberType: "worker",
+						ownerName: "owner",
+						ownerSessionId: created.metadata.ownerSessionId,
+						token: "bootstrap-control-release-retry",
+						spawnTaskId: "spawn-control-release-retry",
+					},
+					sessionId: "release-retry-worker-session",
+					runtimeId: "release-retry-worker-runtime",
+					backend: "pi",
+				});
+
+				const first = await applyCrewControlCommand?.({
+					roomDir: created.roomDir,
+					verb: "release",
+					spawnTaskId: "spawn-control-release-retry",
+					commandId: "release-command-first",
+					requestId: "req-control-release-retry",
+				});
+				const replayed = await applyCrewControlCommand?.({
+					roomDir: created.roomDir,
+					verb: "release",
+					spawnTaskId: "spawn-control-release-retry",
+					commandId: "release-command-second",
+					requestId: "req-control-release-retry",
+				});
+
+				expect(first).toMatchObject({
+					event: "activated",
+					phase: "activation",
+				});
+				expect(replayed).toMatchObject({
+					event: "activated",
+					phase: "activation",
+					spawn_task_id: "spawn-control-release-retry",
+				});
+				expect(await readCrewControlReplay?.(created.roomDir, {
+					verb: "release",
+					spawnTaskId: "spawn-control-release-retry",
+					commandId: "release-command-second",
+				})).toMatchObject({
+					outcome: {
+						event: "activated",
+						phase: "activation",
+					},
+				});
+			});
+		});
+
+		it("replays aborted for later same-verb abort retries after abort", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-control-abort-retry",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				const applyCrewControlCommand = (storage as {
+					applyCrewControlCommand?: (options: {
+						roomDir: string;
+						verb: "release" | "abort";
+						spawnTaskId: string;
+						commandId?: string;
+						requestId?: string;
+						reason?: string;
+					}) => Promise<any>;
+				}).applyCrewControlCommand;
+				const readCrewControlReplay = (storage as {
+					readCrewControlReplay?: (roomDir: string, options: {
+						verb: "release" | "abort";
+						spawnTaskId: string;
+						commandId: string;
+					}) => Promise<any>;
+				}).readCrewControlReplay;
+				expect(applyCrewControlCommand).toBeTypeOf("function");
+				expect(readCrewControlReplay).toBeTypeOf("function");
+
+				await createSpawningMember(created.roomDir, {
+					name: "abort-retry-worker",
+					displayName: "abort-retry-worker",
+					type: "worker",
+					backend: "pi",
+					taskId: "spawn-control-abort-retry",
+					bootstrapToken: "bootstrap-control-abort-retry",
+					requestReplay: {
+						requestId: "req-control-abort-retry",
+						requestedName: "abort-retry-worker",
+						type: "worker",
+						model: null,
+						task: null,
+						transient: false,
+						metadata: { source: "control-abort-retry" },
+						activation: "manual",
+						holdTimeoutMs: 45_000,
+					},
+				} as never);
+				await markMemberJoined({
+					bootstrap: {
+						version: 1,
+						roomId: created.metadata.roomId,
+						roomDir: created.roomDir,
+						memberName: "abort-retry-worker",
+						memberType: "worker",
+						ownerName: "owner",
+						ownerSessionId: created.metadata.ownerSessionId,
+						token: "bootstrap-control-abort-retry",
+						spawnTaskId: "spawn-control-abort-retry",
+					},
+					sessionId: "abort-retry-worker-session",
+					runtimeId: "abort-retry-worker-runtime",
+					backend: "pi",
+				});
+
+				const first = await applyCrewControlCommand?.({
+					roomDir: created.roomDir,
+					verb: "abort",
+					spawnTaskId: "spawn-control-abort-retry",
+					commandId: "abort-command-first",
+					requestId: "req-control-abort-retry",
+				});
+				const replayed = await applyCrewControlCommand?.({
+					roomDir: created.roomDir,
+					verb: "abort",
+					spawnTaskId: "spawn-control-abort-retry",
+					commandId: "abort-command-second",
+					requestId: "req-control-abort-retry",
+				});
+
+				expect(first).toMatchObject({
+					event: "aborted",
+					phase: "activation",
+				});
+				expect(replayed).toMatchObject({
+					event: "aborted",
+					phase: "activation",
+					spawn_task_id: "spawn-control-abort-retry",
+				});
+				expect(await readCrewControlReplay?.(created.roomDir, {
+					verb: "abort",
+					spawnTaskId: "spawn-control-abort-retry",
+					commandId: "abort-command-second",
+				})).toMatchObject({
+					outcome: {
+						event: "aborted",
+						phase: "activation",
+					},
+				});
 			});
 		});
 

@@ -1657,6 +1657,16 @@ export async function applyCrewControlCommand(options: {
 }): Promise<CrewAddReplayableEvent> {
 	return await withRoomMutationLock(options.roomDir, async () => {
 		const updatedAt = new Date().toISOString();
+		if (options.commandId) {
+			const replayed = await readCrewControlReplay(options.roomDir, {
+				verb: options.verb,
+				spawnTaskId: options.spawnTaskId,
+				commandId: options.commandId,
+			});
+			if (replayed) {
+				return replayed.outcome;
+			}
+		}
 		const record = await findCrewAddReplayForControl({
 			roomDir: options.roomDir,
 			spawnTaskId: options.spawnTaskId,
@@ -1684,14 +1694,6 @@ export async function applyCrewControlCommand(options: {
 			return failed;
 		}
 		if (options.commandId) {
-			const replayed = await readCrewControlReplay(options.roomDir, {
-				verb: options.verb,
-				spawnTaskId: options.spawnTaskId,
-				commandId: options.commandId,
-			});
-			if (replayed) {
-				return replayed.outcome;
-			}
 			const conflict = (await listCrewControlReplays(options.roomDir)).find(
 				(existing) =>
 					existing.command_id === options.commandId
@@ -1718,6 +1720,38 @@ export async function applyCrewControlCommand(options: {
 				});
 				return failed;
 			}
+		}
+		if (
+			(options.verb === "release" && record.replay?.event === "activated")
+			|| (options.verb === "abort" && record.replay?.event === "aborted")
+		) {
+			const replayedOutcome = buildCrewControlLifecycleEvent({
+				record,
+				event: options.verb === "release" ? "activated" : "aborted",
+				commandId: options.commandId,
+				reason:
+					options.verb === "abort"
+						? (record.replay?.reason ?? "caller_abort")
+						: null,
+				runtimeId: record.replay?.runtime_id ?? null,
+				roomId: record.replay?.room_id ?? null,
+			});
+			await persistCrewAddReplayEventLocked({
+				roomDir: options.roomDir,
+				requestId: record.request_id,
+				event: replayedOutcome,
+				updatedAt,
+			});
+			await persistCrewControlReplayRecord({
+				roomDir: options.roomDir,
+				verb: options.verb,
+				spawnTaskId: options.spawnTaskId,
+				commandId: options.commandId,
+				requestId: record.request_id,
+				outcome: replayedOutcome,
+				updatedAt,
+			});
+			return replayedOutcome;
 		}
 		let member = await loadRoomMemberState(options.roomDir, record.member_name).catch(() => null);
 		let job = await readSpawnJob(options.roomDir, record.spawn_task_id).catch(() => null);
