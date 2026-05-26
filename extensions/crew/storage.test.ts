@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as storage from "./storage.ts";
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { setFileLockTestHooksForTests, withFileLock } from "./lock.ts";
 import {
 	appendMessage,
@@ -1134,6 +1134,104 @@ describe("Member identity helpers", () => {
 				expect(replayed.replayed).toBe(true);
 				expect(replayed.taskId).toBe(first.job.taskId);
 				expect(replayed.activation).toBe("immediate");
+			});
+		});
+
+		it("applies the default manual hold lease when hold_timeout_ms is omitted", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-manual-default-hold",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				const readCrewAddRequestReplay = (storage as {
+					readCrewAddRequestReplay?: (roomDir: string, requestId: string) => Promise<any>;
+				}).readCrewAddRequestReplay;
+				expect(readCrewAddRequestReplay).toBeTypeOf("function");
+
+				const spawn = vi.fn(async () => ({
+					runtimeId: "runtime-manual-default-hold",
+					backend: "pi" as const,
+				}));
+				const queueOptions = {
+					activeRoom: {
+						role: "owner",
+						roomDir: created.roomDir,
+						roomId: created.metadata.roomId,
+						memberName: "owner",
+						sessionId: created.metadata.ownerSessionId,
+					} as any,
+					sessionId: created.metadata.ownerSessionId,
+					ctx: {
+						cwd: tempDir,
+						hasUI: false,
+					} as any,
+					adapters: {
+						pi: {
+							kind: "pi" as const,
+							spawn,
+						},
+						paseo: {
+							kind: "paseo" as const,
+							isAvailable: async () => false,
+							async spawn() {
+								throw new Error("manual default hold test should not select paseo");
+							},
+						},
+					},
+				} as never;
+
+				const queued = await queueCrewAdd(
+					{
+						request_id: "req-manual-default-hold",
+						name: "worker",
+						type: "worker",
+						task: "same request",
+						transient: true,
+						activation: "manual",
+						metadata: { source: "first-call" },
+					},
+					queueOptions,
+				);
+
+				expect(queued.replayed).toBe(false);
+				expect(queued.activation).toBe("manual");
+				expect(queued.hold_timeout_ms).toBe(30_000);
+				expect(spawn).toHaveBeenCalledTimes(1);
+
+				const persisted = await readCrewAddRequestReplay?.(created.roomDir, "req-manual-default-hold");
+				expect(persisted).toMatchObject({
+					request_id: "req-manual-default-hold",
+					activation: "manual",
+					hold_timeout_ms: 30_000,
+				});
+
+				const job = await readSpawnJob(created.roomDir, queued.taskId);
+				expect(job?.deliveryActivation).toBe("manual");
+				expect(job?.holdExpiresAt).toEqual(expect.any(String));
+				expect(new Date(job?.holdExpiresAt ?? 0).getTime()).toBeGreaterThan(Date.now());
+
+				const replayed = await queueCrewAdd(
+					{
+						request_id: "req-manual-default-hold",
+						name: "worker",
+						type: "worker",
+						task: "same request",
+						transient: true,
+						activation: "manual",
+						hold_timeout_ms: 30_000,
+						metadata: { source: "retry-call" },
+					},
+					queueOptions,
+				);
+
+				expect(replayed.replayed).toBe(true);
+				expect(replayed.taskId).toBe(queued.taskId);
+				expect(replayed.hold_timeout_ms).toBe(30_000);
+				expect(spawn).toHaveBeenCalledTimes(1);
 			});
 		});
 

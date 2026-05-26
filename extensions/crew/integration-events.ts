@@ -25,6 +25,7 @@ export interface CrewLifecycleEvent {
 	room_id: string | null;
 	spawn_task_id: string | null;
 	runtime_id: string | null;
+	session_id: string | null;
 	activation: CrewAddActivation | null;
 	metadata: Record<string, unknown> | null;
 	delivery_state: CrewDeliveryState | null;
@@ -33,7 +34,9 @@ export interface CrewLifecycleEvent {
 	reason: string | null;
 }
 
-export type CrewLifecycleEventInput = Omit<CrewLifecycleEvent, "event_id">;
+export type CrewLifecycleEventInput = Omit<CrewLifecycleEvent, "event_id" | "session_id"> & {
+	session_id?: string | null;
+};
 
 export type PublicCrewLifecycleEventName =
 	| "rejected"
@@ -78,6 +81,7 @@ interface CrewLifecycleEventSeed {
 	room_id?: string | null;
 	spawn_task_id?: string | null;
 	runtime_id?: string | null;
+	session_id?: string | null;
 	activation?: CrewAddActivation | null;
 	metadata?: Record<string, unknown> | null;
 	error?: string | null;
@@ -104,6 +108,7 @@ function normalizeLifecycleEvent(
 		room_id: input.room_id ?? null,
 		spawn_task_id: input.spawn_task_id ?? null,
 		runtime_id: input.runtime_id ?? null,
+		session_id: input.session_id ?? null,
 		activation: input.activation ?? null,
 		metadata: input.metadata ?? null,
 		delivery_state: input.delivery_state ?? null,
@@ -140,6 +145,7 @@ export function buildCrewLifecycleEvent(
 	return {
 		event_id,
 		...normalized,
+		session_id: normalized.session_id,
 	};
 }
 
@@ -211,7 +217,7 @@ export function toPublicCrewLifecycleEvent(
 		room_id: input.room_id ?? null,
 		spawn_task_id: input.spawn_task_id ?? null,
 		runtime_id: input.runtime_id ?? null,
-		session_id: null,
+		session_id: input.session_id ?? null,
 		activation: input.activation ?? null,
 		metadata: input.metadata ?? null,
 		phase: normalizePublicPhase(input, event),
@@ -242,6 +248,7 @@ function createCrewLifecycleEvent(
 		room_id: seed.room_id,
 		spawn_task_id: seed.spawn_task_id,
 		runtime_id: seed.runtime_id,
+		session_id: seed.session_id ?? null,
 		activation: seed.activation ?? null,
 		metadata: seed.metadata ?? null,
 		delivery_state,
@@ -297,6 +304,7 @@ export function createCrewRejectedLifecycleEvent(
 		room_id: null,
 		spawn_task_id: null,
 		runtime_id: null,
+		session_id: null,
 		activation: seed.activation ?? null,
 		metadata: null,
 		delivery_state: null,
@@ -323,6 +331,7 @@ export function createCrewSpawnedLifecycleEvent(
 		room_id: seed.room_id ?? null,
 		spawn_task_id: seed.spawn_task_id ?? null,
 		runtime_id: seed.runtime_id ?? null,
+		session_id: seed.session_id ?? null,
 		activation: seed.activation ?? null,
 		metadata: seed.metadata ?? null,
 		delivery_state: seed.delivery_state ?? null,
@@ -346,6 +355,7 @@ export function createCrewFailedLifecycleEvent(
 		room_id: seed.room_id ?? null,
 		spawn_task_id: seed.spawn_task_id ?? null,
 		runtime_id: seed.runtime_id ?? null,
+		session_id: seed.session_id ?? null,
 		activation: seed.activation ?? null,
 		metadata: seed.metadata ?? null,
 		delivery_state: null,

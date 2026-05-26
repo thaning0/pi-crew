@@ -1046,6 +1046,7 @@ function deriveCrewAddReplayEvent(record: CrewAddReplayRecord, member: RoomMembe
 		room_id: record.replay?.room_id ?? null,
 		spawn_task_id: record.spawn_task_id,
 		runtime_id: member?.runtimeId ?? job?.runtimeId ?? record.replay?.runtime_id ?? null,
+		session_id: member?.sessionId ?? record.replay?.session_id ?? null,
 		activation: record.activation,
 		metadata: record.metadata ?? null,
 	};
@@ -1244,6 +1245,15 @@ function buildCrewAddReplayLifecycleSnapshot(options: {
 			?? options.job?.runtimeId
 			?? previous?.runtime_id
 			?? null,
+		session_id:
+			preservedSpawnEvent?.session_id
+			?? preservedClaimEvent?.session_id
+			?? preservedActivationEvent?.session_id
+			?? preservedTerminalEvent?.session_id
+			?? derivedEvent?.session_id
+			?? options.member?.sessionId
+			?? previous?.session_id
+			?? null,
 		activation: options.record.activation,
 		metadata:
 			preservedSpawnEvent?.metadata
@@ -1318,6 +1328,11 @@ function buildReplaySnapshotFromEvent(options: {
 			?? options.member?.runtimeId
 			?? options.job?.runtimeId
 			?? options.record.replay?.runtime_id
+			?? null,
+		session_id:
+			options.event.session_id
+			?? options.member?.sessionId
+			?? options.record.replay?.session_id
 			?? null,
 		activation: options.event.activation ?? options.record.activation,
 		metadata: options.event.metadata ?? options.record.metadata ?? null,
@@ -1614,6 +1629,7 @@ function buildCrewTerminatedEvent(options: {
 			room_id: record?.replay?.room_id ?? options.roomId,
 			spawn_task_id: options.spawnTaskId ?? record?.spawn_task_id ?? options.job?.taskId ?? null,
 			runtime_id: options.member?.runtimeId ?? options.job?.runtimeId ?? record?.replay?.runtime_id ?? null,
+			session_id: options.member?.sessionId ?? record?.replay?.session_id ?? null,
 			activation: record?.activation ?? options.job?.deliveryActivation ?? null,
 			metadata: record?.metadata ?? null,
 			reason: options.reason,
@@ -1670,6 +1686,7 @@ function buildRequestlessAbortedEvent(options: {
 		room_id: options.roomId,
 		spawn_task_id: options.job.taskId,
 		runtime_id: options.member?.runtimeId ?? options.job.runtimeId ?? null,
+		session_id: options.member?.sessionId ?? null,
 		activation: options.job.deliveryActivation ?? null,
 		metadata: null,
 		delivery_state: "ended",
@@ -1698,6 +1715,7 @@ function buildRequestlessControlLifecycleEvent(options: {
 		room_id: options.roomId,
 		spawn_task_id: options.job.taskId,
 		runtime_id: options.member?.runtimeId ?? options.job.runtimeId ?? null,
+		session_id: options.member?.sessionId ?? null,
 		activation: options.job.deliveryActivation ?? null,
 		metadata: null,
 		delivery_state: options.event === "activated" ? "enabled" : "ended",
@@ -1731,6 +1749,7 @@ function buildCrewControlFailedEvent(options: {
 		room_id: record?.replay?.room_id ?? options.roomId ?? null,
 		spawn_task_id: options.spawnTaskId,
 		runtime_id: record?.replay?.runtime_id ?? options.member?.runtimeId ?? options.job?.runtimeId ?? null,
+		session_id: record?.replay?.session_id ?? options.member?.sessionId ?? null,
 		activation: record?.activation ?? options.job?.deliveryActivation ?? null,
 		metadata: record?.metadata ?? null,
 		delivery_state: record?.replay?.delivery_state ?? options.job?.deliveryState ?? null,
@@ -1746,6 +1765,7 @@ function buildCrewControlLifecycleEvent(options: {
 	commandId?: string;
 	reason?: string | null;
 	runtimeId?: string | null;
+	sessionId?: string | null;
 	roomId?: string | null;
 }): CrewAddReplayableEvent {
 	return buildCrewLifecycleEvent({
@@ -1759,6 +1779,7 @@ function buildCrewControlLifecycleEvent(options: {
 		room_id: options.roomId ?? options.record.replay?.room_id ?? null,
 		spawn_task_id: options.record.spawn_task_id,
 		runtime_id: options.runtimeId ?? options.record.replay?.runtime_id ?? null,
+		session_id: options.sessionId ?? options.record.replay?.session_id ?? null,
 		activation: options.record.activation,
 		metadata: options.record.metadata ?? null,
 		delivery_state: options.event === "activated" ? "enabled" : "ended",
@@ -2131,6 +2152,7 @@ export async function applyCrewControlCommand(options: {
 				event: "activated",
 				commandId: options.commandId,
 				runtimeId: member?.runtimeId ?? job?.runtimeId ?? record.replay?.runtime_id ?? null,
+				sessionId: member?.sessionId ?? record.replay?.session_id ?? null,
 				roomId: record.replay?.room_id ?? null,
 			});
 			await persistCrewAddReplayEventLocked({
@@ -2850,6 +2872,7 @@ function buildCrewClaimedReplayEvent(options: {
 			?? options.job?.runtimeId
 			?? previous?.runtime_id
 			?? null,
+		session_id: options.member.sessionId ?? previous?.session_id ?? null,
 		activation: options.record.activation,
 		metadata: previous?.metadata ?? options.record.metadata ?? null,
 		delivery_state: deliveryState,
@@ -2904,6 +2927,7 @@ async function maybePersistFirstClaimEventLocked(options: {
 			room_id: claimedEvent.room_id,
 			spawn_task_id: claimedEvent.spawn_task_id,
 			runtime_id: claimedEvent.runtime_id,
+			session_id: claimedEvent.session_id,
 			activation: claimedEvent.activation,
 			metadata: claimedEvent.metadata,
 			delivery_state: "enabled",

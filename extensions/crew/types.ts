@@ -257,6 +257,7 @@ export interface CrewAddReplayableEvent {
 	room_id: string | null;
 	spawn_task_id: string | null;
 	runtime_id: string | null;
+	session_id: string | null;
 	activation: CrewAddActivation | null;
 	metadata: Record<string, unknown> | null;
 	delivery_state: CrewReplayDeliveryState | null;
@@ -287,6 +288,7 @@ export interface CrewAddReplayLifecycleSnapshot {
 	room_id: string | null;
 	spawn_task_id: string | null;
 	runtime_id: string | null;
+	session_id: string | null;
 	activation: CrewAddActivation | null;
 	metadata: Record<string, unknown> | null;
 	delivery_state: CrewReplayDeliveryState | null;

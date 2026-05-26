@@ -469,6 +469,21 @@ function normalizeCrewAddReplayActivation(
 	return activation === "manual" ? "manual" : "immediate";
 }
 
+const DEFAULT_CREW_ADD_HOLD_TIMEOUT_MS = 30_000;
+
+function normalizeCrewAddHoldTimeoutMs(
+	activation: CrewAddReplayRecord["activation"] | QueuedCrewAddRequest["activation"],
+	holdTimeoutMs?: number | null,
+): number | null {
+	if (normalizeCrewAddReplayActivation(activation) !== "manual") {
+		return null;
+	}
+	if (Number.isInteger(holdTimeoutMs) && holdTimeoutMs !== undefined && holdTimeoutMs > 0) {
+		return holdTimeoutMs;
+	}
+	return DEFAULT_CREW_ADD_HOLD_TIMEOUT_MS;
+}
+
 function crewAddReplayMatchesRequest(
 	record: CrewAddReplayRecord,
 	params: QueuedCrewAddRequest,
@@ -479,7 +494,7 @@ function crewAddReplayMatchesRequest(
 		&& record.material.task === (params.task?.trim() || null)
 		&& record.material.transient === (params.transient === true && isNonEmptyString(params.task))
 		&& normalizeCrewAddReplayActivation(record.activation) === normalizeCrewAddReplayActivation(params.activation)
-		&& record.hold_timeout_ms === (params.hold_timeout_ms ?? null);
+		&& record.hold_timeout_ms === normalizeCrewAddHoldTimeoutMs(params.activation, params.hold_timeout_ms);
 }
 
 function toQueuedCrewReplayEvent(
@@ -500,6 +515,7 @@ function toQueuedCrewReplayEvent(
 		room_id: replay.room_id,
 		spawn_task_id: replay.spawn_task_id,
 		runtime_id: replay.runtime_id,
+		session_id: replay.session_id,
 		activation: replay.activation,
 		metadata: replay.metadata,
 		delivery_state: replay.delivery_state,
@@ -517,12 +533,13 @@ function computeSpawnDeliveryState(
 
 function computeSpawnHoldExpiresAt(
 	activation: "immediate" | "manual",
-	holdTimeoutMs?: number,
+	holdTimeoutMs?: number | null,
 ): string | null {
-	if (activation !== "manual" || !Number.isInteger(holdTimeoutMs) || holdTimeoutMs <= 0) {
+	const effectiveHoldTimeoutMs = normalizeCrewAddHoldTimeoutMs(activation, holdTimeoutMs);
+	if (effectiveHoldTimeoutMs === null) {
 		return null;
 	}
-	return new Date(Date.now() + holdTimeoutMs).toISOString();
+	return new Date(Date.now() + effectiveHoldTimeoutMs).toISOString();
 }
 
 type QueueCrewTellOptions = {
@@ -781,7 +798,8 @@ export async function queueCrewAdd(
 	const bootstrapToken = randomUUID();
 	const spawnNonce = randomUUID().replace(/-/g, "").slice(0, 6);
 	const activation = normalizeCrewAddReplayActivation(params.activation);
-	const holdExpiresAt = computeSpawnHoldExpiresAt(activation, params.hold_timeout_ms);
+	const effectiveHoldTimeoutMs = normalizeCrewAddHoldTimeoutMs(activation, params.hold_timeout_ms);
+	const holdExpiresAt = computeSpawnHoldExpiresAt(activation, effectiveHoldTimeoutMs);
 
 	const typedAgent = loadTypedRoomAgentDefinition(params.type, options.ctx.cwd);
 	if (!typedAgent) {
@@ -829,7 +847,7 @@ export async function queueCrewAdd(
 					transient,
 					metadata: params.metadata ?? null,
 					activation: params.activation ?? null,
-					hold_timeout_ms: params.hold_timeout_ms ?? null,
+					hold_timeout_ms: effectiveHoldTimeoutMs,
 				}
 				: null,
 		});
@@ -847,7 +865,7 @@ export async function queueCrewAdd(
 				replayedLifecycleEvent,
 				request_id: created.replayRecord?.request_id ?? params.request_id,
 				activation: created.replayRecord ? (created.replayRecord.activation ?? undefined) : params.activation,
-				hold_timeout_ms: created.replayRecord ? (created.replayRecord.hold_timeout_ms ?? undefined) : params.hold_timeout_ms,
+				hold_timeout_ms: created.replayRecord ? (created.replayRecord.hold_timeout_ms ?? undefined) : (effectiveHoldTimeoutMs ?? undefined),
 				metadata: created.replayRecord ? (created.replayRecord.metadata ?? undefined) : params.metadata,
 				unresolvedMentions: [],
 			};
@@ -1445,7 +1463,7 @@ export async function queueCrewAdd(
 		replayedLifecycleEvent,
 		request_id: params.request_id,
 		activation: params.activation,
-		hold_timeout_ms: params.hold_timeout_ms,
+		hold_timeout_ms: effectiveHoldTimeoutMs ?? undefined,
 		metadata: params.metadata,
 		initialTask,
 		initialTaskBoardError,

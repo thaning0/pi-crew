@@ -706,6 +706,7 @@ describe("crew:add request feedback", () => {
 				request_id: "req-activated-immediate",
 				member_target: "immediate-worker",
 				spawn_task_id: "spawn-activated-immediate",
+				session_id: "immediate-worker-session",
 				activation: "immediate",
 				delivery_state: "enabled",
 			});
