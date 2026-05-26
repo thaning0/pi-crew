@@ -14,6 +14,7 @@ import {
 	findRoomByOwnerSessionId,
 	getRoomMessagePath,
 	getRoomHeartbeatPath,
+	getRoomMemberStatePath,
 	getRoomMutationLockPath,
 	getRoomSpawnJobPath,
 	initializeRoomRuntime,
@@ -34,6 +35,7 @@ import {
 import { MutationProxyServer } from "./mutation-proxy.ts";
 import { MutationClient } from "./mutation-client.ts";
 import { reconcileSpawnTimeouts } from "./watchdog.ts";
+import { queueCrewAdd } from "./tools.ts";
 
 async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "room-storage-test-"));
@@ -887,6 +889,93 @@ describe("Member identity helpers", () => {
 					metadata: { source: "first-call", ordinal: 1 },
 					activation: "manual",
 					hold_timeout_ms: 45_000,
+				});
+			});
+		});
+
+		it("repairs missing anchors before replaying a duplicate crew:add retry", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-request-replay-repair",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+
+				const first = await createSpawningMember(created.roomDir, {
+					displayName: "worker",
+					type: "worker",
+					backend: "pi",
+					taskId: "spawn-request-repair-1",
+					requestReplay: {
+						requestId: "req-repair-replay",
+						requestedName: "worker",
+						type: "worker",
+						model: null,
+						task: "repair me",
+						transient: false,
+						metadata: { source: "first-call" },
+						activation: "immediate",
+						holdTimeoutMs: null,
+					},
+				} as never);
+
+				await fs.rm(getRoomMemberStatePath(created.roomDir, first.member.name), { force: true });
+				await fs.rm(getRoomSpawnJobPath(created.roomDir, first.job.taskId), { force: true });
+				expect(await loadRoomMemberState(created.roomDir, first.member.name).catch(() => null)).toBeNull();
+				expect(await readSpawnJob(created.roomDir, first.job.taskId)).toBeNull();
+
+				const replayed = await queueCrewAdd(
+					{
+						request_id: "req-repair-replay",
+						name: "worker",
+						type: "worker",
+						task: "repair me",
+						activation: "immediate",
+						metadata: { source: "retry-call" },
+					},
+					{
+						activeRoom: {
+							role: "owner",
+							roomDir: created.roomDir,
+							roomId: created.metadata.roomId,
+							memberName: "owner",
+							sessionId: created.metadata.ownerSessionId,
+						} as any,
+						sessionId: created.metadata.ownerSessionId,
+						ctx: {
+							cwd: tempDir,
+							hasUI: false,
+						} as any,
+						adapters: {
+							pi: {
+								kind: "pi",
+								async spawn() {
+									throw new Error("duplicate replay should not spawn");
+								},
+							},
+							paseo: {
+								kind: "paseo",
+								async spawn() {
+									throw new Error("duplicate replay should not spawn");
+								},
+							},
+						},
+					} as never,
+				);
+
+				expect(replayed.replayed).toBe(true);
+				expect(replayed.memberName).toBe(first.member.name);
+				expect(replayed.taskId).toBe(first.job.taskId);
+				await expect(loadRoomMemberState(created.roomDir, first.member.name)).resolves.toMatchObject({
+					name: first.member.name,
+					requestId: "req-repair-replay",
+				});
+				await expect(readSpawnJob(created.roomDir, first.job.taskId)).resolves.toMatchObject({
+					taskId: first.job.taskId,
+					requestId: "req-repair-replay",
 				});
 			});
 		});

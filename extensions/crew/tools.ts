@@ -102,11 +102,11 @@ import {
 	listRoomMembers,
 	loadRoomMemberState,
 	normalizeMemberDisplayName,
+	prepareCrewAddReplay,
 	resolveMemberTarget,
 	resolveMemberTargetForMerge,
 	readMessage,
 	readMessageBySeq,
-	readCrewAddRequestReplay,
 	readSpawnJob,
 	transitionSpawnJob,
 	transitionSpawnJobRecord,
@@ -676,7 +676,7 @@ export async function queueCrewAdd(
 	const batchMessageOptions = getBatchMessageOptions(batchContext);
 	const displayName = normalizeMemberDisplayName(params.name);
 	if (params.request_id) {
-		const replayRecord = await readCrewAddRequestReplay(activeRoom.roomDir, params.request_id);
+		const replayRecord = await prepareCrewAddReplay(activeRoom.roomDir, params.request_id);
 		if (replayRecord && crewAddReplayMatchesRequest(replayRecord, params)) {
 			return {
 				memberName: replayRecord.member_name,

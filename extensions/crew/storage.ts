@@ -1095,6 +1095,17 @@ export async function readCrewAddRequestReplay(roomDir: string, requestId: strin
 	}
 }
 
+export async function prepareCrewAddReplay(roomDir: string, requestId: string): Promise<CrewAddReplayRecord | null> {
+	return await withRoomMutationLock(roomDir, async () => {
+		const record = await readCrewAddRequestReplay(roomDir, requestId);
+		if (!record) {
+			return null;
+		}
+		await repairCrewAddReplayAnchors(record, roomDir);
+		return record;
+	});
+}
+
 async function listRoomSpawnJobs(roomDir: string): Promise<RoomSpawnJob[]> {
 	let entries: string[] = [];
 	try {
