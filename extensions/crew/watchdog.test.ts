@@ -1822,7 +1822,7 @@ describe("stale room reaping", () => {
 			expect(terminalPayloads).toHaveLength(1);
 			expect(terminalPayloads[0]).toMatchObject({
 				event: "terminated",
-				phase: "delivery",
+				phase: "runtime",
 				request_id: "req-stale-terminal",
 				member_target: "worker",
 				spawn_task_id: "spawn-stale-terminal",

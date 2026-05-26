@@ -35,6 +35,40 @@ export interface CrewLifecycleEvent {
 
 export type CrewLifecycleEventInput = Omit<CrewLifecycleEvent, "event_id">;
 
+export type PublicCrewLifecycleEventName =
+	| "rejected"
+	| "spawned"
+	| "claimed"
+	| "activated"
+	| "failed"
+	| "aborted"
+	| "terminated";
+
+export type PublicCrewLifecyclePhase = "request" | "spawn" | "claim" | "activation" | "runtime";
+
+export interface PublicCrewLifecycleEvent {
+	protocol_version: 1;
+	event_id: string;
+	event: PublicCrewLifecycleEventName;
+	occurred_at: string;
+	request_id: string | null;
+	command_id: string | null;
+	requested_name: string | null;
+	member_target: string | null;
+	member_type: string | null;
+	room_id: string | null;
+	spawn_task_id: string | null;
+	runtime_id: string | null;
+	session_id: string | null;
+	activation: CrewAddActivation | null;
+	metadata: Record<string, unknown> | null;
+	phase: PublicCrewLifecyclePhase;
+	delivery_state: CrewDeliveryState | null;
+	hold_expires_at: string | null;
+	error: string | null;
+	reason: string | null;
+}
+
 interface CrewLifecycleEventSeed {
 	request_id?: string | null;
 	command_id?: string | null;
@@ -51,7 +85,7 @@ interface CrewLifecycleEventSeed {
 }
 
 type CrewEventEmitter = (
-	payload: CrewLifecycleEvent,
+	payload: PublicCrewLifecycleEvent,
 ) => void | Promise<void>;
 
 let crewEventEmitter: CrewEventEmitter | null = null;
@@ -106,6 +140,85 @@ export function buildCrewLifecycleEvent(
 	return {
 		event_id,
 		...normalized,
+	};
+}
+
+function normalizePublicEventName(input: CrewLifecycleEvent): PublicCrewLifecycleEventName {
+	switch (input.event) {
+		case "pending":
+		case "held":
+			return "spawned";
+		case "enabled":
+			return "activated";
+		case "ended":
+			return input.reason?.startsWith("spawn-") || Boolean(input.error)
+				? "failed"
+				: "terminated";
+		default:
+			return input.event;
+	}
+}
+
+function normalizePublicPhase(
+	input: CrewLifecycleEvent,
+	event: PublicCrewLifecycleEventName,
+): PublicCrewLifecyclePhase {
+	switch (event) {
+		case "claimed":
+			return "claim";
+		case "activated":
+		case "aborted":
+			return "activation";
+		case "terminated":
+			return "runtime";
+		case "failed":
+			if (input.reason?.startsWith("spawn-")) return "spawn";
+			if (input.phase === "request") return "request";
+			if (input.phase === "activation") return "activation";
+			if (input.phase === "delivery") return "claim";
+			return "spawn";
+		case "rejected":
+			return "request";
+		default:
+			return "spawn";
+	}
+}
+
+function normalizePublicDeliveryState(input: CrewLifecycleEvent): CrewDeliveryState | null {
+	if (input.event === "spawned" && input.activation === "immediate" && input.delivery_state === "enabled") {
+		return "pending";
+	}
+	if (input.event === "claimed" && input.activation === "immediate" && input.delivery_state === "enabled") {
+		return "pending";
+	}
+	return input.delivery_state ?? null;
+}
+
+export function toPublicCrewLifecycleEvent(
+	input: CrewLifecycleEvent,
+): PublicCrewLifecycleEvent {
+	const event = normalizePublicEventName(input);
+	return {
+		protocol_version: 1,
+		event_id: input.event_id,
+		event,
+		occurred_at: new Date().toISOString(),
+		request_id: input.request_id ?? null,
+		command_id: input.command_id ?? null,
+		requested_name: input.requested_name ?? null,
+		member_target: input.member_target ?? null,
+		member_type: input.member_type ?? null,
+		room_id: input.room_id ?? null,
+		spawn_task_id: input.spawn_task_id ?? null,
+		runtime_id: input.runtime_id ?? null,
+		session_id: null,
+		activation: input.activation ?? null,
+		metadata: input.metadata ?? null,
+		phase: normalizePublicPhase(input, event),
+		delivery_state: normalizePublicDeliveryState(input),
+		hold_expires_at: input.hold_expires_at ?? null,
+		error: input.error ?? null,
+		reason: input.reason ?? null,
 	};
 }
 
@@ -257,7 +370,7 @@ export async function emitCrewLifecycleEvent(
 	}
 
 	try {
-		await crewEventEmitter(payload);
+		await crewEventEmitter(toPublicCrewLifecycleEvent(payload));
 	} catch {
 		// Best-effort only: lifecycle handling must not fail because outbound feedback failed.
 	}

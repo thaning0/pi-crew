@@ -114,7 +114,23 @@ describe("integration-events", () => {
 		const second = await emitCrewLifecycleEvent({ ...baseEvent });
 
 		expect(first.event_id).toBe(second.event_id);
-		expect(emitted).toEqual([first, second]);
+		expect(emitted).toHaveLength(2);
+		expect(emitted[0]).toEqual(expect.objectContaining({
+			protocol_version: 1,
+			event_id: first.event_id,
+			event: "spawned",
+			phase: "spawn",
+			request_id: "req-2",
+			spawn_task_id: "spawn-456",
+		}));
+		expect(emitted[1]).toEqual(expect.objectContaining({
+			protocol_version: 1,
+			event_id: second.event_id,
+			event: "spawned",
+			phase: "spawn",
+			request_id: "req-2",
+			spawn_task_id: "spawn-456",
+		}));
 	});
 
 	it("swallows sink failures and still returns the emitted payload", async () => {
@@ -174,7 +190,14 @@ describe("integration-events", () => {
 			}),
 		);
 
-		expect(emit).toHaveBeenCalledWith("crew:event", emitted);
+		expect(emit).toHaveBeenCalledWith("crew:event", expect.objectContaining({
+			protocol_version: 1,
+			event_id: emitted.event_id,
+			event: "spawned",
+			phase: "spawn",
+			request_id: "req-5",
+			spawn_task_id: "spawn-222",
+		}));
 	});
 
 	it("allows the emitter to be reset", async () => {

@@ -49,6 +49,7 @@ import type { RoomMutationProxy } from "./storage.ts";
 import type { MutationClient } from "./mutation-client.ts";
 import { createMutationClient } from "./mutation-client.ts";
 import { createRoomLogger } from "./logger.ts";
+import { toPublicCrewLifecycleEvent } from "./integration-events.ts";
 import { ensureOwnerInfrastructure, ensureOwnerRoom } from "./owner-room.ts";
 
 export interface ActiveRoomContext {
@@ -90,7 +91,7 @@ async function emitClaimedFeedback(
 ): Promise<void> {
 	if (!claimedEvent) return;
 	try {
-		await pi.events.emit("crew:event", claimedEvent);
+		await pi.events.emit("crew:event", toPublicCrewLifecycleEvent(claimedEvent));
 	} catch {
 		// Best-effort only: claim feedback must not fail lifecycle activation.
 	}
@@ -102,7 +103,7 @@ async function emitActivatedFeedback(
 ): Promise<void> {
 	if (!activatedEvent) return;
 	try {
-		await pi.events.emit("crew:event", activatedEvent);
+		await pi.events.emit("crew:event", toPublicCrewLifecycleEvent(activatedEvent));
 	} catch {
 		// Best-effort only: activation feedback must not block lifecycle activation.
 	}

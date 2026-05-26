@@ -90,6 +90,7 @@ import {
 	createCrewRejectedLifecycleEvent,
 	emitCrewLifecycleEvent,
 	setCrewEventEmitter,
+	toPublicCrewLifecycleEvent,
 } from "./integration-events.ts";
 import {
 	ensureOwnerInfrastructure,
@@ -255,7 +256,7 @@ async function emitCrewControlOutcome(
 	payload: CrewAddReplayableEvent,
 ): Promise<void> {
 	try {
-		await pi.events.emit("crew:event", payload);
+		await pi.events.emit("crew:event", toPublicCrewLifecycleEvent(payload));
 	} catch {
 		// Best-effort only: control feedback must not block command handling.
 	}
@@ -1023,7 +1024,7 @@ export default function roomExtension(
 				);
 				if (queued.replayedLifecycleEvent) {
 					try {
-						await pi.events.emit("crew:event", queued.replayedLifecycleEvent);
+						await pi.events.emit("crew:event", toPublicCrewLifecycleEvent(queued.replayedLifecycleEvent));
 					} catch {
 						// Best-effort only: replay feedback must not block request handling.
 					}

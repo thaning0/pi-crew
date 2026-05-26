@@ -517,8 +517,8 @@ describe("crew:add request feedback", () => {
 		expect(crewEventPayloads(harness.emit)).toContainEqual(
 			expect.objectContaining({
 				event_id: "crew-event-replayed",
-				event: "ended",
-				phase: "delivery",
+				event: "failed",
+				phase: "spawn",
 				request_id: "req-replayed",
 				spawn_task_id: "spawn-task-replay",
 			}),
@@ -572,7 +572,7 @@ describe("crew:add request feedback", () => {
 			expect.objectContaining({
 				event_id: "crew-event-claimed-held",
 				event: "claimed",
-				phase: "delivery",
+				phase: "claim",
 				request_id: "req-claimed-held",
 				spawn_task_id: "spawn-task-claimed-held",
 				delivery_state: "held",
@@ -697,11 +697,12 @@ describe("crew:add request feedback", () => {
 			);
 
 			const activatedCalls = emit.mock.calls.filter(
-				([eventName, payload]) => eventName === "crew:event" && payload?.event === "enabled",
+				([eventName, payload]) => eventName === "crew:event" && payload?.event === "activated",
 			);
 			expect(activatedCalls).toHaveLength(1);
 			expect(activatedCalls[0]?.[1]).toMatchObject({
-				event: "enabled",
+				event: "activated",
+				phase: "activation",
 				request_id: "req-activated-immediate",
 				member_target: "immediate-worker",
 				spawn_task_id: "spawn-activated-immediate",
@@ -1103,7 +1104,7 @@ describe("crew:add request feedback", () => {
 			expect(payloads).toContainEqual(
 				expect.objectContaining({
 					event: "terminated",
-					phase: "delivery",
+					phase: "runtime",
 					request_id: "req-remove-terminal",
 					member_target: "remove-worker",
 					spawn_task_id: "spawn-remove-terminal",
@@ -1200,7 +1201,7 @@ describe("crew:add request feedback", () => {
 			expect(payloads).toContainEqual(
 				expect.objectContaining({
 					event: "terminated",
-					phase: "delivery",
+					phase: "runtime",
 					request_id: "req-stop-terminal",
 					member_target: "stop-transient-worker",
 					spawn_task_id: "spawn-stop-terminal",
