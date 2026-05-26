@@ -77,6 +77,7 @@ import {
 import { createRoomLogger, closeLogStream } from "./logger.ts";
 import type { RoomMessage, RoomSpawnAdapter } from "./types.ts";
 import { createPaseoPiMemberAdapter, createPiMemberAdapter } from "./spawn.ts";
+import { setCrewEventEmitter } from "./integration-events.ts";
 import {
 	ensureOwnerInfrastructure,
 	ensureOwnerRoom,
@@ -84,6 +85,7 @@ import {
 } from "./owner-room.ts";
 
 export { resetActiveRoomsForTests } from "./lifecycle.ts";
+export * from "./integration-events.ts";
 
 
 /** Orchestrator-specific instructions, loaded once at module init. */
@@ -131,6 +133,14 @@ export default function roomExtension(
 	pi: ExtensionAPI,
 	options: RoomExtensionOptions = {},
 ) {
+	setCrewEventEmitter(async (payload) => {
+		try {
+			await pi.events.emit("crew:event", payload);
+		} catch {
+			// Best-effort only: never let outbound lifecycle feedback crash room handling.
+		}
+	});
+
 	const runtimeRoot = options.runtimeRoot ?? getDefaultRoomRuntimeRoot();
 	const adapters = {
 		pi: options.adapters?.pi ?? createPiMemberAdapter(),
