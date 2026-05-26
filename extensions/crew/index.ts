@@ -946,7 +946,7 @@ export default function roomExtension(
 		// Fire-and-forget: don't block the event bus
 		(async () => {
 			try {
-				await queueCrewAdd(
+				const queued = await queueCrewAdd(
 					{
 						...data,
 					},
@@ -957,6 +957,13 @@ export default function roomExtension(
 						adapters,
 					},
 				);
+				if (queued.replayedLifecycleEvent) {
+					try {
+						await pi.events.emit("crew:event", queued.replayedLifecycleEvent);
+					} catch {
+						// Best-effort only: replay feedback must not block request handling.
+					}
+				}
 			} catch (err) {
 				createRoomLogger(ownerRoom.roomDir, "room").error("crew:add handler failed", {
 					error: err instanceof Error ? err.message : String(err),
@@ -969,7 +976,7 @@ export default function roomExtension(
 							requested_name: data.name,
 							activation: data.activation,
 							error: err instanceof Error ? err.message : String(err),
-							reason: "pre-generation-validation",
+							reason: (err as { crewAddReason?: string } | null)?.crewAddReason ?? "pre-generation-validation",
 						}),
 					);
 				}

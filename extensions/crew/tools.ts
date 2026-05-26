@@ -73,6 +73,7 @@ import {
 } from "./lifecycle.ts";
 
 import type {
+	CrewAddReplayRecord,
 	QueuedCrewAddRequest,
 	QueuedCrewAddResult,
 	QueuedCrewTellResult,
@@ -105,6 +106,7 @@ import {
 	resolveMemberTargetForMerge,
 	readMessage,
 	readMessageBySeq,
+	readCrewAddRequestReplay,
 	readSpawnJob,
 	transitionSpawnJob,
 	transitionSpawnJobRecord,
@@ -438,13 +440,31 @@ type QueueCrewAddOptions = {
 };
 
 type CrewAddFailurePhase = "request" | "spawn";
+type CrewAddFailureReason = "pre-generation-validation" | "request-id-conflict";
 
 function markCrewAddPhase<T extends Error>(
 	error: T,
 	phase: CrewAddFailurePhase,
-): T & { crewAddPhase: CrewAddFailurePhase } {
-	(error as T & { crewAddPhase: CrewAddFailurePhase }).crewAddPhase = phase;
-	return error as T & { crewAddPhase: CrewAddFailurePhase };
+): T & { crewAddPhase: CrewAddFailurePhase; crewAddReason?: CrewAddFailureReason } {
+	const tagged = error as T & { crewAddPhase: CrewAddFailurePhase; crewAddReason?: CrewAddFailureReason };
+	tagged.crewAddPhase = phase;
+	if ((error as { crewAddReason?: CrewAddFailureReason }).crewAddReason) {
+		tagged.crewAddReason = (error as { crewAddReason?: CrewAddFailureReason }).crewAddReason;
+	}
+	return tagged;
+}
+
+function crewAddReplayMatchesRequest(
+	record: CrewAddReplayRecord,
+	params: QueuedCrewAddRequest,
+): boolean {
+	return record.material.requested_name === params.name
+		&& record.material.type === params.type
+		&& record.material.model === (params.model?.trim() || null)
+		&& record.material.task === (params.task?.trim() || null)
+		&& record.material.transient === (params.transient === true && isNonEmptyString(params.task))
+		&& record.activation === (params.activation ?? null)
+		&& record.hold_timeout_ms === (params.hold_timeout_ms ?? null);
 }
 
 type QueueCrewTellOptions = {
@@ -655,6 +675,43 @@ export async function queueCrewAdd(
 	const log = createRoomLogger(activeRoom.roomDir, "room");
 	const batchMessageOptions = getBatchMessageOptions(batchContext);
 	const displayName = normalizeMemberDisplayName(params.name);
+	if (params.request_id) {
+		const replayRecord = await readCrewAddRequestReplay(activeRoom.roomDir, params.request_id);
+		if (replayRecord && crewAddReplayMatchesRequest(replayRecord, params)) {
+			return {
+				memberName: replayRecord.member_name,
+				memberLabel: replayRecord.member_label,
+				taskId: replayRecord.spawn_task_id,
+				backend: replayRecord.backend,
+				transient: replayRecord.material.transient,
+				replayed: true,
+				replayedLifecycleEvent: replayRecord.replay?.event
+					&& replayRecord.replay.event_id
+					&& replayRecord.replay.phase
+					? {
+						event_id: replayRecord.replay.event_id,
+						event: replayRecord.replay.event,
+						phase: replayRecord.replay.phase,
+						request_id: replayRecord.replay.request_id,
+						command_id: replayRecord.replay.command_id,
+						requested_name: replayRecord.replay.requested_name,
+						member_target: replayRecord.replay.member_target,
+						spawn_task_id: replayRecord.replay.spawn_task_id,
+						activation: replayRecord.replay.activation,
+						delivery_state: replayRecord.replay.delivery_state,
+						hold_expires_at: replayRecord.replay.hold_expires_at,
+						error: replayRecord.replay.error,
+						reason: replayRecord.replay.reason,
+					}
+					: null,
+				request_id: replayRecord.request_id,
+				activation: replayRecord.activation ?? undefined,
+				hold_timeout_ms: replayRecord.hold_timeout_ms ?? undefined,
+				metadata: replayRecord.metadata ?? undefined,
+				unresolvedMentions: [],
+			};
+		}
+	}
 	const taskId = randomUUID();
 	const bootstrapToken = randomUUID();
 	const spawnNonce = randomUUID().replace(/-/g, "").slice(0, 6);
@@ -683,6 +740,7 @@ export async function queueCrewAdd(
 	}
 	let internalName: string;
 	let memberLabel: string;
+	let replayedLifecycleEvent: QueuedCrewAddResult["replayedLifecycleEvent"] = null;
 	try {
 		const created = await createSpawningMember(activeRoom.roomDir, {
 			displayName,
@@ -692,9 +750,57 @@ export async function queueCrewAdd(
 			spawnBatchId: batchContext?.id ?? null,
 			transient: transient ? true : null,
 			bootstrapToken,
+			requestReplay: params.request_id
+				? {
+					request_id: params.request_id,
+					requested_name: displayName,
+					type: typedAgent.type,
+					model: effectiveModel ?? null,
+					task: params.task?.trim() || null,
+					transient,
+					metadata: params.metadata ?? null,
+					activation: params.activation ?? null,
+					hold_timeout_ms: params.hold_timeout_ms ?? null,
+				}
+				: null,
 		});
 		internalName = created.member.name;
-		memberLabel = formatMemberLabel(created.member);
+		memberLabel = created.replayRecord?.member_label ?? formatMemberLabel(created.member);
+		replayedLifecycleEvent = created.replayRecord?.replay?.event
+			&& created.replayRecord.replay.event_id
+			&& created.replayRecord.replay.phase
+			? {
+				event_id: created.replayRecord.replay.event_id,
+				event: created.replayRecord.replay.event,
+				phase: created.replayRecord.replay.phase,
+				request_id: created.replayRecord.replay.request_id,
+				command_id: created.replayRecord.replay.command_id,
+				requested_name: created.replayRecord.replay.requested_name,
+				member_target: created.replayRecord.replay.member_target,
+				spawn_task_id: created.replayRecord.replay.spawn_task_id,
+				activation: created.replayRecord.replay.activation,
+				delivery_state: created.replayRecord.replay.delivery_state,
+				hold_expires_at: created.replayRecord.replay.hold_expires_at,
+				error: created.replayRecord.replay.error,
+				reason: created.replayRecord.replay.reason,
+			}
+			: null;
+		if (created.replayed) {
+			return {
+				memberName: created.replayRecord?.member_name ?? internalName,
+				memberLabel,
+				taskId: created.replayRecord?.spawn_task_id ?? created.job.taskId,
+				backend: created.replayRecord?.backend ?? created.job.backend,
+				transient: created.replayRecord?.material.transient ?? transient,
+				replayed: true,
+				replayedLifecycleEvent,
+				request_id: created.replayRecord?.request_id ?? params.request_id,
+				activation: created.replayRecord ? (created.replayRecord.activation ?? undefined) : params.activation,
+				hold_timeout_ms: created.replayRecord ? (created.replayRecord.hold_timeout_ms ?? undefined) : params.hold_timeout_ms,
+				metadata: created.replayRecord ? (created.replayRecord.metadata ?? undefined) : params.metadata,
+				unresolvedMentions: [],
+			};
+		}
 	} catch (error) {
 		if (error instanceof Error) {
 			throw markCrewAddPhase(error, "request");
@@ -1237,6 +1343,8 @@ export async function queueCrewAdd(
 		taskId,
 		backend: adapter.kind,
 		transient,
+		replayed: false,
+		replayedLifecycleEvent,
 		request_id: params.request_id,
 		activation: params.activation,
 		hold_timeout_ms: params.hold_timeout_ms,

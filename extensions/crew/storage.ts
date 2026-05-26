@@ -1,11 +1,23 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { shouldDeliverMessage } from "./dispatch.ts";
 import { withFileLock, type FileLockOptions } from "./lock.ts";
 import { createRoomLogger } from "./logger.ts";
-import type { RoomBackend, RoomBootstrap, RoomMemberState, RoomMessage, RoomMetadata, RoomSpawnJob, RoomSpawnJobState } from "./types.ts";
+import { buildCrewLifecycleEvent } from "./integration-events.ts";
+import type {
+	CrewAddReplayLifecycleSnapshot,
+	CrewAddReplayRecord,
+	CrewAddReplaySeed,
+	RoomBackend,
+	RoomBootstrap,
+	RoomMemberState,
+	RoomMessage,
+	RoomMetadata,
+	RoomSpawnJob,
+	RoomSpawnJobState,
+} from "./types.ts";
 import { loadTypedRoomAgentDefinition } from "./bootstrap.ts";
 import type { MutationClient } from "./mutation-client.ts";
 
@@ -656,8 +668,20 @@ export function getRoomJobsDir(roomDir: string): string {
 	return path.join(roomDir, "jobs");
 }
 
+export function getRoomRequestReplaysDir(roomDir: string): string {
+	return path.join(roomDir, "request-replays");
+}
+
 export function getRoomHeartbeatsDir(roomDir: string): string {
 	return path.join(roomDir, "heartbeats");
+}
+
+function encodeCrewAddRequestReplayKey(requestId: string): string {
+	return createHash("sha256").update(requestId, "utf8").digest("hex");
+}
+
+export function getCrewAddRequestReplayPath(roomDir: string, requestId: string): string {
+	return path.join(getRoomRequestReplaysDir(roomDir), `${encodeCrewAddRequestReplayKey(requestId)}.json`);
 }
 
 export function getMemberHeartbeatPath(roomDir: string, memberName: string): string {
@@ -716,6 +740,7 @@ export async function ensureRoomLayout(roomDir: string): Promise<void> {
 	await fs.mkdir(getRoomMessagesDir(roomDir), { recursive: true });
 	await fs.mkdir(getRoomMembersDir(roomDir), { recursive: true });
 	await fs.mkdir(getRoomJobsDir(roomDir), { recursive: true });
+	await fs.mkdir(getRoomRequestReplaysDir(roomDir), { recursive: true });
 	await fs.mkdir(getRoomHeartbeatsDir(roomDir), { recursive: true });
 }
 
@@ -794,8 +819,340 @@ export async function loadRoomMetadata(roomDir: string): Promise<RoomMetadata> {
 	return await readJsonFile<RoomMetadata>(getRoomMetadataPath(roomDir));
 }
 
+function normalizeCrewAddReplaySeed(seed: CrewAddReplaySeed & {
+	requestId?: string;
+	requestedName?: string;
+	holdTimeoutMs?: number | null;
+}): CrewAddReplaySeed {
+	const requestedName = seed.requested_name ?? seed.requestedName;
+	return {
+		request_id: seed.request_id ?? seed.requestId ?? "",
+		requested_name: normalizeMemberDisplayName(requestedName ?? ""),
+		type: seed.type.trim(),
+		model: seed.model?.trim() || null,
+		task: seed.task?.trim() || null,
+		transient: seed.transient === true,
+		metadata: seed.metadata ?? null,
+		activation: seed.activation ?? null,
+		hold_timeout_ms: seed.hold_timeout_ms ?? seed.holdTimeoutMs ?? null,
+	};
+}
+
+function crewAddReplayMatches(record: CrewAddReplayRecord, seed: CrewAddReplaySeed): boolean {
+	const normalized = normalizeCrewAddReplaySeed(seed);
+	return record.material.requested_name === normalized.requested_name
+		&& record.material.type === normalized.type
+		&& record.material.model === normalized.model
+		&& record.material.task === normalized.task
+		&& record.material.transient === normalized.transient
+		&& record.activation === normalized.activation
+		&& record.hold_timeout_ms === normalized.hold_timeout_ms;
+}
+
+function deriveCrewAddReplayReason(member: RoomMemberState | null, job: RoomSpawnJob | null): string | null {
+	switch (job?.state) {
+		case "failed":
+			return "spawn-failed";
+		case "cancelled":
+			return "spawn-cancelled";
+		case "timed_out_pending_external_resolution":
+			return "spawn-timeout-external";
+		case "timed_out_pending_member_claim":
+			return "spawn-timeout-claim";
+		default:
+			break;
+	}
+	if (member?.state === "removed") {
+		return "member-removed";
+	}
+	if (member?.state === "stopping") {
+		return "member-stopping";
+	}
+	if (member?.state === "error") {
+		return "member-error";
+	}
+	return null;
+}
+
+function deriveCrewAddReplayEvent(record: CrewAddReplayRecord, member: RoomMemberState | null, job: RoomSpawnJob | null) {
+	const eventSeed = {
+		request_id: record.request_id,
+		command_id: null,
+		requested_name: record.material.requested_name,
+		member_target: member?.name ?? record.member_name,
+		spawn_task_id: record.spawn_task_id,
+		activation: record.activation,
+	};
+	const error = job?.error ?? member?.lastError ?? null;
+	const terminalReason = deriveCrewAddReplayReason(member, job);
+	if (terminalReason) {
+		return buildCrewLifecycleEvent({
+			...eventSeed,
+			event: "ended",
+			phase: "delivery",
+			delivery_state: "ended",
+			hold_expires_at: null,
+			error,
+			reason: terminalReason,
+		});
+	}
+	if (record.activation === "manual" && (job?.state === "completed" || member?.state === "idle" || member?.state === "running")) {
+		if (record.replay?.event === "enabled") {
+			return buildCrewLifecycleEvent({
+				...eventSeed,
+				event: "enabled",
+				phase: "delivery",
+				delivery_state: "enabled",
+				hold_expires_at: null,
+				error: null,
+				reason: null,
+			});
+		}
+		return buildCrewLifecycleEvent({
+			...eventSeed,
+			event: "held",
+			phase: "delivery",
+			delivery_state: "held",
+			hold_expires_at: null,
+			error: null,
+			reason: "manual-activation",
+		});
+	}
+	if (job?.state === "completed" || member?.state === "idle" || member?.state === "running") {
+		return buildCrewLifecycleEvent({
+			...eventSeed,
+			event: "enabled",
+			phase: "delivery",
+			delivery_state: "enabled",
+			hold_expires_at: null,
+			error: null,
+			reason: null,
+		});
+	}
+	if (
+		member?.state === "spawning"
+		|| job?.state === "starting"
+		|| job?.state === "external_created"
+		|| job?.state === "claimed"
+	) {
+		return buildCrewLifecycleEvent({
+			...eventSeed,
+			event: "pending",
+			phase: "delivery",
+			delivery_state: "pending",
+			hold_expires_at: null,
+			error: null,
+			reason: null,
+		});
+	}
+	return null;
+}
+
+function buildCrewAddReplayLifecycleSnapshot(options: {
+	record: CrewAddReplayRecord;
+	member?: RoomMemberState | null;
+	job?: RoomSpawnJob | null;
+	updatedAt?: string;
+}): CrewAddReplayLifecycleSnapshot {
+	const previous = options.record.replay;
+	const updatedAt = options.updatedAt ?? new Date().toISOString();
+	const derivedEvent = deriveCrewAddReplayEvent(options.record, options.member ?? null, options.job ?? null);
+	return {
+		event_id: derivedEvent?.event_id ?? previous?.event_id ?? null,
+		event: derivedEvent?.event ?? previous?.event ?? null,
+		phase: derivedEvent?.phase ?? previous?.phase ?? null,
+		request_id: options.record.request_id,
+		command_id: derivedEvent?.command_id ?? previous?.command_id ?? null,
+		requested_name: options.record.material.requested_name,
+		member_target: derivedEvent?.member_target ?? options.record.member_label,
+		spawn_task_id: options.record.spawn_task_id,
+		activation: options.record.activation,
+		delivery_state: derivedEvent?.delivery_state ?? previous?.delivery_state ?? null,
+		hold_expires_at: derivedEvent?.hold_expires_at ?? previous?.hold_expires_at ?? null,
+		error: derivedEvent?.error ?? options.job?.error ?? options.member?.lastError ?? null,
+		reason: derivedEvent?.reason ?? previous?.reason ?? null,
+		member_state: options.member?.state ?? previous?.member_state ?? null,
+		job_state: options.job?.state ?? previous?.job_state ?? null,
+		runtime_id: options.member?.runtimeId ?? options.job?.runtimeId ?? null,
+		updated_at: updatedAt,
+	};
+}
+
+function buildCrewAddReplayRecord(options: {
+	seed: CrewAddReplaySeed;
+	member: RoomMemberState;
+	job: RoomSpawnJob;
+	backend: RoomBackend;
+	updatedAt?: string;
+}): CrewAddReplayRecord {
+	const normalized = normalizeCrewAddReplaySeed(options.seed);
+	const updatedAt = options.updatedAt ?? new Date().toISOString();
+	const baseRecord: CrewAddReplayRecord = {
+		request_id: normalized.request_id,
+		material: {
+			requested_name: normalized.requested_name,
+			type: normalized.type,
+			model: normalized.model,
+			task: normalized.task,
+			transient: normalized.transient,
+		},
+		metadata: normalized.metadata ?? null,
+		activation: normalized.activation,
+		hold_timeout_ms: normalized.hold_timeout_ms,
+		member_name: options.member.name,
+		member_label: formatMemberLabel(options.member),
+		backend: options.backend,
+		spawn_task_id: options.job.taskId,
+		replay: null,
+		created_at: updatedAt,
+		updated_at: updatedAt,
+	};
+	return {
+		...baseRecord,
+		replay: buildCrewAddReplayLifecycleSnapshot({
+			record: baseRecord,
+			member: options.member,
+			job: options.job,
+			updatedAt,
+		}),
+	};
+}
+
+function materializeReplayMember(record: CrewAddReplayRecord, member: RoomMemberState | null): RoomMemberState {
+	if (member) {
+		return member;
+	}
+	return {
+		name: record.member_name,
+		displayName: record.material.requested_name,
+		requestId: record.request_id,
+		type: record.material.type,
+		backend: record.backend,
+		runtimeId: record.replay?.runtime_id ?? null,
+		runtimeIdentitySource: "none",
+		state: record.replay?.member_state ?? "spawning",
+		spawnTaskId: record.replay?.member_state === "spawning" ? record.spawn_task_id : null,
+		spawnBatchId: null,
+		transient: record.material.transient,
+		currentTask: null,
+		currentTaskMessageId: null,
+		chatBusy: false,
+		lastCompletedTask: null,
+		lastError: record.replay?.error ?? null,
+		lastSeenSeq: 0,
+		joinedAt: record.created_at,
+		updatedAt: record.updated_at,
+		heartbeatAt: null,
+		lastActiveAt: record.updated_at,
+		sessionId: null,
+		bootstrapToken: null,
+		bootstrapClaimedAt: null,
+		pendingSelfAckMessageId: null,
+	};
+}
+
+function materializeReplayJob(record: CrewAddReplayRecord, job: RoomSpawnJob | null): RoomSpawnJob {
+	if (job) {
+		return job;
+	}
+	return {
+		taskId: record.spawn_task_id,
+		memberName: record.member_name,
+		requestId: record.request_id,
+		backend: record.backend,
+		runtimeId: record.replay?.runtime_id ?? null,
+		bootstrapToken: null,
+		state: record.replay?.job_state ?? "starting",
+		createdAt: record.created_at,
+		updatedAt: record.updated_at,
+		error: record.replay?.error ?? null,
+	};
+}
+
+async function repairCrewAddReplayAnchors(record: CrewAddReplayRecord, roomDir: string): Promise<{ member: RoomMemberState; job: RoomSpawnJob }> {
+	const existingMember = await loadRoomMemberState(roomDir, record.member_name).catch(() => null);
+	const existingJob = await readSpawnJob(roomDir, record.spawn_task_id).catch(() => null);
+	const member = materializeReplayMember(record, existingMember);
+	const job = materializeReplayJob(record, existingJob);
+	if (!existingMember) {
+		await writeRoomMemberState(roomDir, member);
+	}
+	if (!existingJob) {
+		await writeSpawnJobFile(roomDir, job);
+	}
+	return { member, job };
+}
+
+async function writeCrewAddRequestReplayFile(roomDir: string, record: CrewAddReplayRecord): Promise<void> {
+	await writeJsonAtomic(getCrewAddRequestReplayPath(roomDir, record.request_id), record);
+}
+
+export async function readCrewAddRequestReplay(roomDir: string, requestId: string): Promise<CrewAddReplayRecord | null> {
+	try {
+		return await readJsonFile<CrewAddReplayRecord>(getCrewAddRequestReplayPath(roomDir, requestId));
+	} catch {
+		return null;
+	}
+}
+
+async function listRoomSpawnJobs(roomDir: string): Promise<RoomSpawnJob[]> {
+	let entries: string[] = [];
+	try {
+		entries = await fs.readdir(getRoomJobsDir(roomDir));
+	} catch {
+		return [];
+	}
+	return await Promise.all(
+		entries
+			.filter((entry) => entry.startsWith("spawn-") && entry.endsWith(".json"))
+			.sort((left, right) => left.localeCompare(right))
+			.map((entry) => readJsonFile<RoomSpawnJob>(path.join(getRoomJobsDir(roomDir), entry))),
+	);
+}
+
+async function syncCrewAddReplayRecord(options: {
+	roomDir: string;
+	requestId: string;
+	member?: RoomMemberState | null;
+	job?: RoomSpawnJob | null;
+	updatedAt?: string;
+}): Promise<void> {
+	const record = await readCrewAddRequestReplay(options.roomDir, options.requestId);
+	if (!record) {
+		return;
+	}
+	const member = options.member === undefined
+		? await loadRoomMemberState(options.roomDir, record.member_name).catch(() => null)
+		: options.member;
+	const job = options.job === undefined
+		? await readSpawnJob(options.roomDir, record.spawn_task_id).catch(() => null)
+		: options.job;
+	const updatedAt = options.updatedAt ?? new Date().toISOString();
+	await writeCrewAddRequestReplayFile(options.roomDir, {
+		...record,
+		member_name: member?.name ?? record.member_name,
+		member_label: member ? formatMemberLabel(member) : record.member_label,
+		backend: job?.backend ?? member?.backend ?? record.backend,
+		replay: buildCrewAddReplayLifecycleSnapshot({
+			record,
+			member,
+			job,
+			updatedAt,
+		}),
+		updated_at: updatedAt,
+	});
+}
+
 export async function writeRoomMemberState(roomDir: string, member: RoomMemberState): Promise<void> {
 	await writeJsonAtomic(getRoomMemberStatePath(roomDir, member.name), member);
+	if (member.requestId) {
+		await syncCrewAddReplayRecord({
+			roomDir,
+			requestId: member.requestId,
+			member,
+			updatedAt: member.updatedAt,
+		});
+	}
 	if (member.state === "removed") {
 		await deleteMemberHeartbeat(roomDir, member.name).catch((err) => {
 			const code = (err as NodeJS.ErrnoException)?.code;
@@ -813,6 +1170,14 @@ export async function writeRoomMemberState(roomDir: string, member: RoomMemberSt
 async function writeSpawnJobFile(roomDir: string, job: RoomSpawnJob): Promise<void> {
 	assertSpawnJobStateForBackend(job.backend, job.state);
 	await writeJsonAtomic(getRoomSpawnJobPath(roomDir, job.taskId), job);
+	if (job.requestId) {
+		await syncCrewAddReplayRecord({
+			roomDir,
+			requestId: job.requestId,
+			job,
+			updatedAt: job.updatedAt,
+		});
+	}
 }
 
 export async function loadRoomMemberState(roomDir: string, memberName: string): Promise<RoomMemberState> {
@@ -1085,6 +1450,7 @@ export async function claimMemberSession(options: {
 		const baseline: RoomMemberState = current ?? {
 			name: options.bootstrap.memberName,
 			type: options.bootstrap.memberType,
+			requestId: spawnJob?.requestId ?? null,
 			backend: recoveredBackend,
 			runtimeId: recoveredRuntimeId,
 			state: "spawning",
@@ -1129,6 +1495,7 @@ export async function claimMemberSession(options: {
 
 		const next: RoomMemberState = {
 			...baseline,
+			requestId: baseline.requestId ?? nextJob?.requestId ?? null,
 			backend: effectiveBackend,
 			runtimeId: effectiveRuntimeId,
 			runtimeIdentitySource: resolveRuntimeIdentitySource({
@@ -1226,6 +1593,7 @@ export async function finalizeMemberRuntime(options: {
 		});
 		const nextMember: RoomMemberState = {
 			...current,
+			requestId: current.requestId ?? job.requestId ?? null,
 			backend: options.backend,
 			runtimeId: options.runtimeId,
 			runtimeIdentitySource: "owner",
@@ -1351,6 +1719,7 @@ export async function markMemberJoined(options: {
 			current = {
 				name: bootstrap.memberName,
 				type: bootstrap.memberType,
+				requestId: spawnJob?.requestId ?? null,
 				backend: recoveredBackend,
 				runtimeId: recoveredRuntimeId,
 				state: "spawning",
@@ -1406,6 +1775,7 @@ export async function markMemberJoined(options: {
 
 		const next: RoomMemberState = {
 			...current,
+			requestId: current.requestId ?? spawnJob?.requestId ?? null,
 			backend,
 			runtimeId: effectiveRuntimeId,
 			runtimeIdentitySource: backend === "paseo"
@@ -1844,9 +2214,53 @@ export async function createSpawningMember(
 		transient?: boolean | null;
 		bootstrapToken?: string | null;
 		sessionId?: string | null;
+		requestReplay?: CrewAddReplaySeed | null;
 	},
-): Promise<{ member: RoomMemberState; job: RoomSpawnJob }> {
+): Promise<{ member: RoomMemberState; job: RoomSpawnJob; replayed: boolean; replayRecord: CrewAddReplayRecord | null }> {
 	return await withRoomMutationLock(roomDir, async () => {
+		const replaySeed = options.requestReplay
+			? normalizeCrewAddReplaySeed(options.requestReplay)
+			: null;
+		if (replaySeed) {
+			const existingReplay = await readCrewAddRequestReplay(roomDir, replaySeed.request_id);
+			if (existingReplay) {
+				if (!crewAddReplayMatches(existingReplay, replaySeed)) {
+					throw Object.assign(
+						new ValidationError(`request_id ${replaySeed.request_id} conflicts with an existing crew:add request.`),
+						{ crewAddReason: "request-id-conflict" },
+					);
+				}
+				const repaired = await repairCrewAddReplayAnchors(existingReplay, roomDir);
+				return {
+					member: repaired.member,
+					job: repaired.job,
+					replayed: true,
+					replayRecord: existingReplay,
+				};
+			}
+			const existingMember = (await listRoomMembers(roomDir))
+				.find((member) => member.requestId === replaySeed.request_id) ?? null;
+			const existingJob = existingMember
+				? (await listRoomSpawnJobs(roomDir)).find((job) => job.requestId === replaySeed.request_id) ?? null
+				: null;
+			if (existingMember && existingJob) {
+				const recoveredRecord = buildCrewAddReplayRecord({
+					seed: replaySeed,
+					member: existingMember,
+					job: existingJob,
+					backend: existingJob.backend,
+					updatedAt: existingJob.updatedAt,
+				});
+				await writeCrewAddRequestReplayFile(roomDir, recoveredRecord);
+				return {
+					member: existingMember,
+					job: existingJob,
+					replayed: true,
+					replayRecord: recoveredRecord,
+				};
+			}
+		}
+
 		const normalizedDisplayName = options.displayName ? normalizeMemberDisplayName(options.displayName) : null;
 		const members = await listRoomMembers(roomDir);
 		const memberName = options.name ?? (normalizedDisplayName
@@ -1875,6 +2289,7 @@ export async function createSpawningMember(
 		const member: RoomMemberState = {
 			name: memberName,
 			displayName: normalizedDisplayName,
+			requestId: replaySeed?.request_id ?? null,
 			type: options.type,
 			backend: options.backend,
 			runtimeId: null,
@@ -1901,6 +2316,7 @@ export async function createSpawningMember(
 		const job: RoomSpawnJob = {
 			taskId: options.taskId,
 			memberName,
+			requestId: replaySeed?.request_id ?? null,
 			backend: options.backend,
 			runtimeId: null,
 			bootstrapToken: options.bootstrapToken ?? null,
@@ -1910,9 +2326,21 @@ export async function createSpawningMember(
 			error: null,
 		};
 
+		const replayRecord = replaySeed
+			? buildCrewAddReplayRecord({
+				seed: replaySeed,
+				member,
+				job,
+				backend: options.backend,
+				updatedAt: now,
+			})
+			: null;
+		if (replayRecord) {
+			await writeCrewAddRequestReplayFile(roomDir, replayRecord);
+		}
 		await writeRoomMemberState(roomDir, member);
 		await writeSpawnJobFile(roomDir, job);
-		return { member, job };
+		return { member, job, replayed: false, replayRecord };
 	});
 }
 

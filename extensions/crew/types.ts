@@ -11,6 +11,9 @@ export type RoomSpawnJobState =
 	| "timed_out_pending_member_claim"
 	| "failed"
 	| "cancelled";
+export type CrewReplayLifecyclePhase = "request" | "delivery";
+export type CrewReplayLifecycleEventName = "pending" | "held" | "enabled" | "ended" | "rejected";
+export type CrewReplayDeliveryState = "pending" | "held" | "enabled" | "ended";
 export type RoomMessageKind = "task" | "info" | "question" | "completion" | "error" | "cancelled" | "progress";
 export type PendingTerminalReplyHandoffState = "snapshot_pending" | "snapshot_done" | "reply_appended" | "owner_handoff_done";
 
@@ -36,6 +39,7 @@ export interface RoomMetadata {
 export interface RoomMemberState {
 	name: string;
 	displayName?: string | null;
+	requestId?: string | null;
 	type: string;
 	backend: RoomBackend;
 	runtimeId: string | null;
@@ -79,6 +83,7 @@ export interface RoomMemberState {
 export interface RoomSpawnJob {
 	taskId: string;
 	memberName: string;
+	requestId?: string | null;
 	backend: RoomBackend;
 	runtimeId?: string | null;
 	bootstrapToken?: string | null;
@@ -209,12 +214,83 @@ export interface QueuedCrewAddRequest {
 	metadata?: Record<string, unknown>;
 }
 
+export interface CrewAddReplaySeed {
+	request_id: string;
+	requested_name: string;
+	type: string;
+	model: string | null;
+	task: string | null;
+	transient: boolean;
+	metadata?: Record<string, unknown> | null;
+	activation: CrewAddActivation | null;
+	hold_timeout_ms: number | null;
+}
+
+export interface CrewAddReplayableEvent {
+	event_id: string;
+	event: CrewReplayLifecycleEventName;
+	phase: CrewReplayLifecyclePhase;
+	request_id: string | null;
+	command_id: string | null;
+	requested_name: string | null;
+	member_target: string | null;
+	spawn_task_id: string | null;
+	activation: CrewAddActivation | null;
+	delivery_state: CrewReplayDeliveryState | null;
+	hold_expires_at: string | null;
+	error: string | null;
+	reason: string | null;
+}
+
+export interface CrewAddReplayLifecycleSnapshot {
+	event_id: string | null;
+	event: CrewReplayLifecycleEventName | null;
+	phase: CrewReplayLifecyclePhase | null;
+	request_id: string | null;
+	command_id: string | null;
+	requested_name: string | null;
+	member_target: string | null;
+	spawn_task_id: string | null;
+	activation: CrewAddActivation | null;
+	delivery_state: CrewReplayDeliveryState | null;
+	hold_expires_at: string | null;
+	error: string | null;
+	reason: string | null;
+	member_state: RoomMemberLifecycleState | null;
+	job_state: RoomSpawnJobState | null;
+	runtime_id: string | null;
+	updated_at: string;
+}
+
+export interface CrewAddReplayRecord {
+	request_id: string;
+	material: {
+		requested_name: string;
+		type: string;
+		model: string | null;
+		task: string | null;
+		transient: boolean;
+	};
+	metadata: Record<string, unknown> | null;
+	activation: CrewAddActivation | null;
+	hold_timeout_ms: number | null;
+	member_name: string;
+	member_label: string;
+	backend: RoomBackend;
+	spawn_task_id: string;
+	replay: CrewAddReplayLifecycleSnapshot | null;
+	created_at: string;
+	updated_at: string;
+}
+
 export interface QueuedCrewAddResult {
 	memberName: string;
 	memberLabel: string;
 	taskId: string;
 	backend: RoomBackend;
 	transient: boolean;
+	replayed?: boolean;
+	replayedLifecycleEvent?: CrewAddReplayableEvent | null;
 	request_id?: string;
 	activation?: CrewAddActivation;
 	hold_timeout_ms?: number;

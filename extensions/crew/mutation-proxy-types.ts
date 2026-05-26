@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import type {
+	CrewAddReplaySeed,
 	RoomMessage,
 	RoomMemberState,
 	RoomMetadata,
@@ -36,7 +37,7 @@ export type MutationCommand =
 	| { kind: "claim_member_session"; payload: ClaimMemberSessionPayload }
 	| { kind: "finalize_member_runtime"; payload: FinalizeMemberRuntimePayload }
 	| { kind: "mark_member_joined"; payload: { bootstrap: RoomBootstrap; sessionId: string | null; runtimeId: string; backend?: RoomMemberState["backend"] } }
-	| { kind: "create_spawning_member"; payload: { name?: string; displayName: string; type: string; backend: RoomBackend; taskId: string; bootstrapToken?: string | null; sessionId?: string | null } }
+	| { kind: "create_spawning_member"; payload: { name?: string; displayName: string; type: string; backend: RoomBackend; taskId: string; bootstrapToken?: string | null; sessionId?: string | null; requestReplay?: CrewAddReplaySeed | null } }
 	| { kind: "create_spawn_job"; payload: { taskId: string; memberName: string; backend: RoomBackend; state?: RoomSpawnJobState; error?: string | null } }
 	| { kind: "write_spawn_job"; payload: { job: RoomSpawnJob } }
 	| { kind: "update_spawn_job"; payload: { taskId: string; patch: Partial<Omit<RoomSpawnJob, "taskId" | "memberName" | "backend" | "createdAt">> } }

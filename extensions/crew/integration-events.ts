@@ -75,7 +75,7 @@ function stableSerialize(value: unknown): string {
 	return JSON.stringify(value);
 }
 
-function buildCrewLifecycleEvent(
+export function buildCrewLifecycleEvent(
 	input: CrewLifecycleEventInput,
 ): CrewLifecycleEvent {
 	const normalized = normalizeLifecycleEvent(input);

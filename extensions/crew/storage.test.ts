@@ -15,6 +15,7 @@ import {
 	getRoomMessagePath,
 	getRoomHeartbeatPath,
 	getRoomMutationLockPath,
+	getRoomSpawnJobPath,
 	initializeRoomRuntime,
 	listRoomMembers,
 	listBoardEntries,
@@ -22,6 +23,7 @@ import {
 	loadRoomMemberState,
 	readMemberHeartbeat,
 	readSpawnJob,
+	updateRoomMemberState,
 	updateSpawnJob,
 	withRoomMutationLock,
 	writeMemberHeartbeat,
@@ -29,6 +31,9 @@ import {
 	writeRoomMemberState,
 	writeRoomMetadata,
 } from "./storage.ts";
+import { MutationProxyServer } from "./mutation-proxy.ts";
+import { MutationClient } from "./mutation-client.ts";
+import { reconcileSpawnTimeouts } from "./watchdog.ts";
 
 async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "room-storage-test-"));
@@ -809,6 +814,294 @@ describe("Member identity helpers", () => {
 
 			const stored = await loadRoomMemberState(created.roomDir, "explorer_internal");
 			expect((stored as { displayName?: string | null }).displayName).toBe("explorer");
+		});
+	});
+
+	describe("crew:add request replay persistence", () => {
+		it("reuses an identical request_id without reserving a second generation and keeps first metadata", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-request-replay-identical",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+
+				const readCrewAddRequestReplay = (storage as {
+					readCrewAddRequestReplay?: (roomDir: string, requestId: string) => Promise<any>;
+				}).readCrewAddRequestReplay;
+				expect(readCrewAddRequestReplay).toBeTypeOf("function");
+
+				const first = await createSpawningMember(created.roomDir, {
+					displayName: "explorer",
+					type: "worker",
+					backend: "pi",
+					taskId: "spawn-request-replay-1",
+					bootstrapToken: "replay-token-1",
+					requestReplay: {
+						requestId: "req-identical-replay",
+						requestedName: "explorer",
+						type: "worker",
+						model: "gpt-5-mini",
+						task: "ship it",
+						transient: false,
+						metadata: { source: "first-call", ordinal: 1 },
+						activation: "manual",
+						holdTimeoutMs: 45_000,
+					},
+				} as never);
+
+				const replayed = await createSpawningMember(created.roomDir, {
+					displayName: "explorer",
+					type: "worker",
+					backend: "pi",
+					taskId: "spawn-request-replay-2",
+					bootstrapToken: "replay-token-2",
+					requestReplay: {
+						requestId: "req-identical-replay",
+						requestedName: "explorer",
+						type: "worker",
+						model: "gpt-5-mini",
+						task: "ship it",
+						transient: false,
+						metadata: { source: "second-call", ordinal: 2 },
+						activation: "manual",
+						holdTimeoutMs: 45_000,
+					},
+				} as never);
+
+				expect((replayed as { replayed?: boolean }).replayed).toBe(true);
+				expect(replayed.member.name).toBe(first.member.name);
+				expect(replayed.job.taskId).toBe(first.job.taskId);
+
+				const members = await listRoomMembers(created.roomDir);
+				expect(members.filter((member) => member.displayName === "explorer" && member.state !== "removed")).toHaveLength(1);
+
+				const persisted = await readCrewAddRequestReplay?.(created.roomDir, "req-identical-replay");
+				expect(persisted).toMatchObject({
+					request_id: "req-identical-replay",
+					spawn_task_id: "spawn-request-replay-1",
+					member_name: first.member.name,
+					metadata: { source: "first-call", ordinal: 1 },
+					activation: "manual",
+					hold_timeout_ms: 45_000,
+				});
+			});
+		});
+
+		it("rejects conflicting reuse of an existing request_id", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-request-replay-conflict",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+
+				await createSpawningMember(created.roomDir, {
+					displayName: "explorer",
+					type: "worker",
+					backend: "pi",
+					taskId: "spawn-request-conflict-1",
+					requestReplay: {
+						requestId: "req-conflict-replay",
+						requestedName: "explorer",
+						type: "worker",
+						model: null,
+						task: "ship it",
+						transient: false,
+						metadata: { source: "first-call" },
+						activation: "immediate",
+						holdTimeoutMs: null,
+					},
+				} as never);
+
+				await expect(createSpawningMember(created.roomDir, {
+					displayName: "explorer",
+					type: "worker",
+					backend: "pi",
+					taskId: "spawn-request-conflict-2",
+					requestReplay: {
+						requestId: "req-conflict-replay",
+						requestedName: "explorer",
+						type: "worker",
+						model: null,
+						task: "do something else",
+						transient: false,
+						metadata: { source: "second-call" },
+						activation: "immediate",
+						holdTimeoutMs: null,
+					},
+				} as never)).rejects.toThrow(/request_id|conflict/i);
+			});
+		});
+
+		it("keeps replay state current through proxy-mediated lifecycle writes", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-request-replay-proxy",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				const readCrewAddRequestReplay = (storage as {
+					readCrewAddRequestReplay?: (roomDir: string, requestId: string) => Promise<any>;
+				}).readCrewAddRequestReplay;
+				expect(readCrewAddRequestReplay).toBeTypeOf("function");
+
+				const proxy = new MutationProxyServer(created.roomDir);
+				const client = new MutationClient(created.roomDir);
+				await proxy.start();
+				await client.connect({ retryTimeoutMs: 1_000 });
+
+				try {
+					await client.send({
+						kind: "create_spawning_member",
+						payload: {
+							name: "proxy-worker",
+							displayName: "proxy-worker",
+							type: "worker",
+							backend: "paseo",
+							taskId: "spawn-request-proxy-1",
+							bootstrapToken: "proxy-replay-token",
+							requestReplay: {
+								requestId: "req-proxy-replay",
+								requestedName: "proxy-worker",
+								type: "worker",
+								model: "gpt-5-mini",
+								task: "proxy task",
+								transient: false,
+								metadata: { source: "proxy" },
+								activation: "manual",
+								holdTimeoutMs: 60_000,
+							},
+						} as any,
+					});
+
+					await client.send({
+						kind: "claim_member_session",
+						payload: {
+							bootstrap: {
+								version: 1,
+								roomId: created.metadata.roomId,
+								roomDir: created.roomDir,
+								memberName: "proxy-worker",
+								memberType: "worker",
+								ownerName: "owner",
+								ownerSessionId: "owner-session-request-replay-proxy",
+								token: "proxy-replay-token",
+								spawnTaskId: "spawn-request-proxy-1",
+							},
+							sessionId: "proxy-member-session",
+						},
+					});
+
+					await client.send({
+						kind: "finalize_member_runtime",
+						payload: {
+							memberName: "proxy-worker",
+							taskId: "spawn-request-proxy-1",
+							runtimeId: "agent-proxy-1",
+							backend: "paseo",
+						},
+					});
+
+					const persisted = await readCrewAddRequestReplay?.(created.roomDir, "req-proxy-replay");
+					expect(persisted).toMatchObject({
+						request_id: "req-proxy-replay",
+						spawn_task_id: "spawn-request-proxy-1",
+						member_name: "proxy-worker",
+						metadata: { source: "proxy" },
+					});
+					expect(persisted?.replay).toMatchObject({
+						event: "held",
+						phase: "delivery",
+						member_state: "idle",
+						job_state: "completed",
+						runtime_id: "agent-proxy-1",
+						spawn_task_id: "spawn-request-proxy-1",
+					});
+				} finally {
+					client.disconnect();
+					await proxy.stop();
+				}
+			});
+		});
+
+		it("updates replay state when timeout reconciliation aborts a delayed spawn", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-request-replay-timeout",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+				const readCrewAddRequestReplay = (storage as {
+					readCrewAddRequestReplay?: (roomDir: string, requestId: string) => Promise<any>;
+				}).readCrewAddRequestReplay;
+
+				await createSpawningMember(created.roomDir, {
+					name: "timeout-worker",
+					displayName: "timeout-worker",
+					type: "worker",
+					backend: "pi",
+					taskId: "spawn-request-timeout-1",
+					requestReplay: {
+						requestId: "req-timeout-replay",
+						requestedName: "timeout-worker",
+						type: "worker",
+						model: null,
+						task: "slow spawn",
+						transient: false,
+						metadata: { source: "timeout" },
+						activation: "immediate",
+						holdTimeoutMs: null,
+					},
+				} as never);
+				const staleTimestamp = new Date(Date.now() - 60_000).toISOString();
+				const seededJob = await readSpawnJob(created.roomDir, "spawn-request-timeout-1");
+				expect(seededJob).not.toBeNull();
+				await writeJsonAtomic(getRoomSpawnJobPath(created.roomDir, "spawn-request-timeout-1"), {
+					...seededJob,
+					createdAt: staleTimestamp,
+					updatedAt: staleTimestamp,
+				});
+				await updateRoomMemberState(created.roomDir, "timeout-worker", {
+					updatedAt: staleTimestamp,
+				});
+
+				await reconcileSpawnTimeouts(created.roomDir, {
+					pi: {
+						kind: "pi",
+						async spawn() {
+							throw new Error("not used");
+						},
+					},
+					paseo: {
+						kind: "paseo",
+						async spawn() {
+							throw new Error("not used");
+						},
+					},
+				}, { joinTimeoutMs: 1 });
+
+				const persisted = await readCrewAddRequestReplay?.(created.roomDir, "req-timeout-replay");
+				expect(persisted?.replay).toMatchObject({
+					event: "ended",
+					phase: "delivery",
+					reason: "spawn-failed",
+					member_state: "error",
+					job_state: "failed",
+				});
+			});
 		});
 	});
 
