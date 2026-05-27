@@ -148,6 +148,8 @@ import {
 	markTaskClosed,
 	setTaskState,
 } from "./deps.ts";
+import { classifyIdleTaskStatus } from "./task-status.ts";
+import { emitTaskLifecycleEvent } from "./task-integration-events.ts";
 import { tryNotifyDepsViaProxy, tryRemoveTransientViaProxy, spawnAgentViaProxy } from "./storage.ts";
 import { MemberAlreadyExistsError, MemberNotFoundError, SpawnFailedError, ValidationError } from "./errors.ts";
 import { ensureOwnerInfrastructure } from "./owner-room.ts";
@@ -204,17 +206,26 @@ async function deriveTaskStatus(
 			return "agentLost";
 		}
 
-		// 3. Check dependency state
+		// 3-4. Compute dependency state and classify via shared helper
 		const deps = extractInputDeps(task.content);
-		if (deps.length > 0) {
-			const { ready, hasError, hasCancelled } = await allDepsReady(roomDir, task.content);
-			if (hasError || hasCancelled) return "blocked_failed";
-			if (!ready) return "waiting_deps";
+		const hasDeps = deps.length > 0;
+		let depsReady = true;
+		let hasError = false;
+		let hasCancelled = false;
+		if (hasDeps) {
+			const depResult = await allDepsReady(roomDir, task.content);
+			depsReady = depResult.ready;
+			hasError = depResult.hasError;
+			hasCancelled = depResult.hasCancelled;
 		}
 
-		// 4. Member holds task but raw state is still idle → assigned
+		// Dep-influenced classification for all member states
+		if (hasError || hasCancelled) return "blocked_failed";
+		if (hasDeps && !depsReady) return "waiting_deps";
+
+		// Idle member holding task → use shared helper for classification
 		if (member.state === "idle") {
-			return "assigned";
+			return classifyIdleTaskStatus({ hasDeps, depsReady, hasError, hasCancelled });
 		}
 	}
 
@@ -940,6 +951,43 @@ export async function queueCrewAdd(
 			registerDeps(roomDir, taskMsg.seq, finalContent, internalName);
 			checkAndNotifyIfReady(roomDir, taskMsg.seq, finalContent)
 				.catch((err) => { consoleError("tools", "dep check failed (spawn)", { roomDir, taskSeq: taskMsg.seq, error: String(err) }); });
+
+			// Emit owner-side assignment event
+			const taskDeps = extractInputDeps(finalContent);
+			const taskHasDeps = taskDeps.length > 0;
+			let taskDepsReady = true;
+			let taskHasError = false;
+			let taskHasCancelled = false;
+			if (taskHasDeps) {
+				const taskDepStatus = await allDepsReady(roomDir, finalContent);
+				taskDepsReady = taskDepStatus.ready;
+				taskHasError = taskDepStatus.hasError;
+				taskHasCancelled = taskDepStatus.hasCancelled;
+			}
+			const idleStatus = classifyIdleTaskStatus({
+				hasDeps: taskHasDeps,
+				depsReady: taskDepsReady,
+				hasError: taskHasError,
+				hasCancelled: taskHasCancelled,
+			});
+			const taskEventName = idleStatus === "assigned"
+				? "task:assigned" as const
+				: idleStatus === "waiting_deps"
+					? "task:waiting_deps" as const
+					: "task:blocked_failed" as const;
+			emitTaskLifecycleEvent({
+				event: taskEventName,
+				task_status: idleStatus,
+				room_id: roomId,
+				member_target: internalName,
+				member_type: typedAgent.type,
+				task_seq: taskMsg.seq,
+				task_message_id: taskMsg.id,
+				task_summary: taskMsg.summary,
+				content_ref: { room_id: roomId, message_id: taskMsg.id, seq: taskMsg.seq, kind: "room_message" },
+			}).catch((err) => {
+				consoleError("tools", "task lifecycle event failed (spawn)", { roomDir, taskSeq: taskMsg.seq, error: String(err) });
+			});
 		} catch (error) {
 			initialTaskBoardError = error instanceof Error ? error.message : String(error);
 			log.error("initial task board write failed, spawning without embedded task", {
@@ -2246,6 +2294,44 @@ export async function queueCrewTell(
 		registerDeps(activeRoom.roomDir, message.seq, annotated.content, effectiveTarget);
 		checkAndNotifyIfReady(activeRoom.roomDir, message.seq, annotated.content)
 			.catch((err) => { consoleError("tools", "dep check failed (send)", { roomDir: activeRoom.roomDir, taskSeq: message.seq, error: String(err) }); });
+
+		// Emit owner-side assignment event
+		const tellDeps = extractInputDeps(annotated.content);
+		const tellHasDeps = tellDeps.length > 0;
+		let tellDepsReady = true;
+		let tellHasError = false;
+		let tellHasCancelled = false;
+		if (tellHasDeps) {
+			const tellDepStatus = await allDepsReady(activeRoom.roomDir, annotated.content);
+			tellDepsReady = tellDepStatus.ready;
+			tellHasError = tellDepStatus.hasError;
+			tellHasCancelled = tellDepStatus.hasCancelled;
+		}
+		const tellIdleStatus = classifyIdleTaskStatus({
+			hasDeps: tellHasDeps,
+			depsReady: tellDepsReady,
+			hasError: tellHasError,
+			hasCancelled: tellHasCancelled,
+		});
+		const tellEventName = tellIdleStatus === "assigned"
+			? "task:assigned" as const
+			: tellIdleStatus === "waiting_deps"
+				? "task:waiting_deps" as const
+				: "task:blocked_failed" as const;
+		const targetMember = await loadRoomMemberState(activeRoom.roomDir, effectiveTarget).catch(() => null);
+		emitTaskLifecycleEvent({
+			event: tellEventName,
+			task_status: tellIdleStatus,
+			room_id: activeRoom.roomId,
+			member_target: effectiveTarget,
+			member_type: targetMember?.type ?? null,
+			task_seq: message.seq,
+			task_message_id: message.id,
+			task_summary: message.summary,
+			content_ref: { room_id: activeRoom.roomId, message_id: message.id, seq: message.seq, kind: "room_message" },
+		}).catch((err) => {
+			consoleError("tools", "task lifecycle event failed (send)", { roomDir: activeRoom.roomDir, taskSeq: message.seq, error: String(err) });
+		});
 	}
 
 	// Update sender's lastActiveAt on every message send
