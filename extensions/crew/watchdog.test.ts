@@ -1834,6 +1834,9 @@ describe("stale room reaping", () => {
 });
 
 describe("held generation expiry", () => {
+	beforeEach(() => {
+		setCrewEventEmitter(null);
+	});
 	it("reconcileMemberLiveness aborts expired held generations without terminated", async () => {
 		const result = await createTestRoom();
 		const roomDir = result.roomDir;

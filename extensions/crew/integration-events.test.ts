@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	createCrewEndedLifecycleEvent,
 	createCrewHeldLifecycleEvent,
@@ -14,6 +14,9 @@ import {
 import roomExtension from "./index.ts";
 
 describe("integration-events", () => {
+	afterEach(() => {
+		setCrewEventEmitter(null);
+	});
 	it("creates lifecycle envelopes without conflating member_target and spawn_task_id", () => {
 		const pending = createCrewPendingLifecycleEvent({
 			request_id: "req-1",

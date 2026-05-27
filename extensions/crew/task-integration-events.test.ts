@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	buildTaskLifecycleEvent,
 	emitTaskLifecycleEvent,
@@ -64,6 +64,9 @@ function makeInput(
 }
 
 describe("task-integration-events", () => {
+	afterEach(() => {
+		setTaskEventEmitter(null);
+	});
 	it("generates a deterministic event_id for the same normalized task transition", () => {
 		const input = makeInput();
 

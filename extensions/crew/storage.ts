@@ -44,11 +44,13 @@ import type { SpawnAgentPayload } from "./mutation-proxy-types.ts";
 
 // ── Mutation Proxy Registry ──────────────────────────────────────────────
 // Stores proxy server instances by roomDir for owner-side short-circuit.
+
 // Avoids circular dependency between storage.ts and mutation-proxy.ts.
 
 export interface RoomMutationProxy {
 	enqueue<T>(fn: () => Promise<T>): Promise<T>;
 	stop(): Promise<void>;
+	setSpawnHandler(handler: (payload: SpawnAgentPayload) => Promise<void>): void;
 }
 
 export type SessionClaimMutationResult = RoomMemberState & {
