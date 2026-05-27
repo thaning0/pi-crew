@@ -495,7 +495,7 @@ export function createPaseoPiMemberAdapter(): RoomSpawnAdapter {
 				const parentAgentId = await resolvePaseoParentAgentId(request);
 
 				const initialPrompt = request.initialTask
-					? `Your assigned task: ${request.initialTask.task}\n\nWhen finished, call: crew_reply(seq=#${request.initialTask.boardMessageSeq}, kind="completion", summary="one-line result", content="full detailed report")\n\nTip: use crew_messages(filter="explorer") to read information relate to your task.`
+					? `Your assigned task: ${request.initialTask.task}\n\nWhen finished, call: crew_reply(seq=#${request.initialTask.boardMessageSeq}, kind="completion", summary="one-line result", content="full detailed report")\n\nUse crew_messages(filter="explorer") to read information relate to your task at first.`
 					: `You are "${request.memberLabel ?? request.memberName}". Wait for messages.`;
 
 				const roomEnv: Record<string, string> | undefined = request.bootstrap
