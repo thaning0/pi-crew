@@ -14,6 +14,7 @@ import { buildCrewLifecycleEvent,
 } from "./integration-events.ts";
 import {
 	buildTaskLifecycleEvent,
+	emitTaskLifecycleEvent,
 	type PublicTaskLifecycleEventName,
 	type PublicTaskLifecycleEvent,
 } from "./task-integration-events.ts";
@@ -2804,7 +2805,14 @@ export async function updateRoomMemberState(
 		kind: "update_member",
 		payload: { memberName, patch },
 	});
-	if (viaClient !== undefined) return viaClient;
+	if (viaClient !== undefined) {
+		// Even via proxy, check if we need to emit task:started.
+		// The proxy executes update_member with writeRoomMemberState on the
+		// owner side; the owner-side proxy handler must also emit started.
+		// For the direct path we handle it below; for the proxy path, the
+		// started emission happens inside the proxy handler (mutation-proxy.ts).
+		return viaClient;
+	}
 
 	return await withRoomMutationLock(roomDir, async () => {
 		const current = await loadRoomMemberState(roomDir, memberName);
@@ -2814,7 +2822,85 @@ export async function updateRoomMemberState(
 			updatedAt: patch.updatedAt ?? new Date().toISOString(),
 		};
 		await writeRoomMemberState(roomDir, next);
+
+		// Emit task:started when member transitions to running
+		if (
+			next.state === "running" &&
+			current.state !== "running" &&
+			next.currentTaskMessageId
+		) {
+			emitOwnerTaskStartedFromMemberState(roomDir, {
+				current,
+				next,
+			}).catch(() => {});
+		}
+
 		return next;
+	});
+}
+
+/**
+ * Emit a task:started event when a member transitions from non-running to running.
+ *
+ * This is the owner-authoritative source of truth for task:started.
+ * It is NOT tied to the later silent Starting: board message (which is a
+ * best-effort side effect in lifecycle.ts).
+ *
+ * Uses replay dedup state to prevent duplicate started events for the same
+ * transition, and resolves correlation fields from live member state.
+ */
+async function emitOwnerTaskStartedFromMemberState(
+	roomDir: string,
+	opts: { current: RoomMemberState; next: RoomMemberState },
+): Promise<void> {
+	const { next } = opts;
+	const taskMessageId = next.currentTaskMessageId!;
+
+	// Load the task message from disk
+	const taskMsg = await readMessage(roomDir, taskMessageId);
+	if (!taskMsg) return;
+
+	// Resolve task_seq from the message
+	const taskSeq = taskMsg.seq;
+	const metadata = await loadRoomMetadata(roomDir).catch(() => null);
+	if (!metadata) return;
+
+	// Check replay state (dedup)
+	const replayResult = await upsertTaskLifecycleReplay(roomDir, {
+		event: "task:started",
+		task_message_id: taskMessageId,
+		task_seq: taskSeq,
+		room_id: metadata.roomId,
+		member_target: next.name,
+		member_type: next.type ?? null,
+		request_id: next.requestId ?? null,
+		spawn_task_id: next.spawnTaskId ?? null,
+		runtime_id: next.runtimeId ?? null,
+		session_id: next.sessionId ?? null,
+		task_summary: taskMsg.summary,
+	});
+
+	if (replayResult.is_replay) return;
+
+	await emitTaskLifecycleEvent({
+		event: "task:started",
+		task_status: "running",
+		room_id: metadata.roomId,
+		member_target: next.name,
+		member_type: next.type ?? null,
+		request_id: next.requestId ?? null,
+		spawn_task_id: next.spawnTaskId ?? null,
+		runtime_id: next.runtimeId ?? null,
+		session_id: next.sessionId ?? null,
+		task_seq: taskSeq,
+		task_message_id: taskMessageId,
+		task_summary: taskMsg.summary,
+		content_ref: {
+			room_id: metadata.roomId,
+			message_id: taskMessageId,
+			seq: taskSeq,
+			kind: "room_message",
+		},
 	});
 }
 

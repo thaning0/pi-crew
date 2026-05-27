@@ -730,10 +730,15 @@ export async function processUnreadMessages(
 	if (deliverable.length === 0) return;
 
 	// Write auto-confirm board message when the member actually transitions to
-	// running. This follows becameRunning (member's lifecycle state change),
-	// not isNewTask (task delivery). Dependency-waiting tasks keep the member
-	// idle; Starting: is only sent when the member enters running — either
-	// immediately for no-deps tasks or later when deps become ready.
+	// running. This is a best-effort side effect only.
+	//
+	// The authoritative owner-side task:started event on crew:task is NOT
+	// emitted here — it is emitted from the owner-observed state transition
+	// inside updateRoomMemberState() in storage.ts.
+	//
+	// Dependency-waiting tasks keep the member idle; Starting: is only sent
+	// when the member enters running — either immediately for no-deps tasks
+	// or later when deps become ready.
 	// Skipped for transient members (no notifications).
 	if (
 		!member.transient &&
