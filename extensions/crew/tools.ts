@@ -2863,5 +2863,5 @@ export async function executeExplore(
 		}
 	}
 
-	return textResult(`Spawned explorer "${name}" to investigate query. The explorer will post findings to the board when complete. Use crew_messages(filter="explorer") to view results.`);
+	return textResult(`Use crew_messages(filter="explorer") to view results.`);
 }
