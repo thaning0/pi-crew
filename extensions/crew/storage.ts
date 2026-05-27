@@ -12,6 +12,11 @@ import { buildCrewLifecycleEvent,
 	createCrewTerminatedLifecycleEvent,
 	emitCrewLifecycleEvent,
 } from "./integration-events.ts";
+import {
+	buildTaskLifecycleEvent,
+	type PublicTaskLifecycleEventName,
+	type PublicTaskLifecycleEvent,
+} from "./task-integration-events.ts";
 import type {
 	CrewAddActivation,
 	CrewAddReplayDeliveryGate,
@@ -30,6 +35,7 @@ import type {
 	RoomMetadata,
 	RoomSpawnJob,
 	RoomSpawnJobState,
+	TaskLifecycleReplayRecord,
 } from "./types.ts";
 import { loadTypedRoomAgentDefinition } from "./bootstrap.ts";
 import type { MutationClient } from "./mutation-client.ts";
@@ -721,6 +727,21 @@ export function getRoomHeartbeatsDir(roomDir: string): string {
 	return path.join(roomDir, "heartbeats");
 }
 
+export function getTaskReplaysDir(roomDir: string): string {
+	return path.join(roomDir, "task-replays");
+}
+
+function encodeTaskLifecycleReplayKey(taskMessageId: string): string {
+	return createHash("sha256").update(taskMessageId, "utf8").digest("hex");
+}
+
+export function getTaskLifecycleReplayPath(roomDir: string, taskMessageId: string): string {
+	return path.join(
+		getTaskReplaysDir(roomDir),
+		`${encodeTaskLifecycleReplayKey(taskMessageId)}.json`,
+	);
+}
+
 function encodeCrewAddRequestReplayKey(requestId: string): string {
 	return createHash("sha256").update(requestId, "utf8").digest("hex");
 }
@@ -812,6 +833,7 @@ export async function ensureRoomLayout(roomDir: string): Promise<void> {
 	await fs.mkdir(getRoomRequestReplaysDir(roomDir), { recursive: true });
 	await fs.mkdir(getRoomControlReplaysDir(roomDir), { recursive: true });
 	await fs.mkdir(getRoomHeartbeatsDir(roomDir), { recursive: true });
+	await fs.mkdir(getTaskReplaysDir(roomDir), { recursive: true });
 }
 
 export async function writeMemberHeartbeat(
@@ -1511,6 +1533,146 @@ export async function readCrewAddRequestReplay(roomDir: string, requestId: strin
 	} catch {
 		return null;
 	}
+}
+
+// ── Task Lifecycle Replay Persistence ────────────────────────────────────
+
+function eventNameToTaskStatus(event: PublicTaskLifecycleEventName): "assigned" | "waiting_deps" | "blocked_failed" | "running" | "completed" | "error" | "cancelled" {
+	switch (event) {
+		case "task:assigned": return "assigned";
+		case "task:waiting_deps": return "waiting_deps";
+		case "task:blocked_failed": return "blocked_failed";
+		case "task:started": return "running";
+		case "task:completed": return "completed";
+		case "task:failed": return "error";
+		case "task:cancelled": return "cancelled";
+	}
+}
+
+export async function readTaskLifecycleReplay(
+	roomDir: string,
+	taskMessageId: string,
+): Promise<TaskLifecycleReplayRecord | null> {
+	try {
+		return await readJsonFile<TaskLifecycleReplayRecord>(
+			getTaskLifecycleReplayPath(roomDir, taskMessageId),
+		);
+	} catch {
+		return null;
+	}
+}
+
+export async function writeTaskLifecycleReplay(
+	roomDir: string,
+	record: TaskLifecycleReplayRecord,
+): Promise<void> {
+	await fs.mkdir(getTaskReplaysDir(roomDir), { recursive: true });
+	await writeJsonAtomic(
+		getTaskLifecycleReplayPath(roomDir, record.task_message_id),
+		record,
+	);
+}
+
+export async function upsertTaskLifecycleReplay(
+	roomDir: string,
+	transitionInput: {
+		event: PublicTaskLifecycleEventName;
+		task_status?: string;
+		task_message_id: string;
+		task_seq: number;
+		room_id: string;
+		member_target: string;
+		member_type?: string | null;
+		request_id?: string | null;
+		spawn_task_id?: string | null;
+		runtime_id?: string | null;
+		session_id?: string | null;
+		task_summary: string;
+		metadata?: Record<string, unknown> | null;
+		reply_message_id?: string | null;
+	},
+): Promise<{
+	record: TaskLifecycleReplayRecord;
+	event_id: string;
+	occurred_at: string;
+	is_replay: boolean;
+}> {
+	const existing = await readTaskLifecycleReplay(roomDir, transitionInput.task_message_id);
+	const now = new Date().toISOString();
+
+	const event = transitionInput.event;
+	const taskStatus = eventNameToTaskStatus(event);
+
+	// If same transition already emitted, return stored values
+	if (existing?.emitted[event]) {
+		return {
+			record: existing,
+			event_id: existing.emitted[event]!.event_id,
+			occurred_at: existing.emitted[event]!.occurred_at,
+			is_replay: true,
+		};
+	}
+
+	// Build the full lifecycle event
+	const fullEvent = buildTaskLifecycleEvent({
+		event,
+		task_status: taskStatus,
+		room_id: transitionInput.room_id,
+		member_target: transitionInput.member_target,
+		member_type: transitionInput.member_type ?? null,
+		request_id: transitionInput.request_id ?? null,
+		spawn_task_id: transitionInput.spawn_task_id ?? null,
+		runtime_id: transitionInput.runtime_id ?? null,
+		session_id: transitionInput.session_id ?? null,
+		task_seq: transitionInput.task_seq,
+		task_message_id: transitionInput.task_message_id,
+		task_summary: transitionInput.task_summary,
+		reply_message_id: transitionInput.reply_message_id ?? null,
+		reply_summary: null,
+		metadata: transitionInput.metadata ?? null,
+		content_ref: {
+			room_id: transitionInput.room_id,
+			message_id: transitionInput.task_message_id,
+			seq: transitionInput.task_seq,
+			kind: "room_message",
+		},
+		error: null,
+		reason: null,
+	});
+
+	const record: TaskLifecycleReplayRecord = {
+		task_message_id: transitionInput.task_message_id,
+		task_seq: transitionInput.task_seq,
+		room_id: transitionInput.room_id,
+		member_target: transitionInput.member_target,
+		member_type: transitionInput.member_type ?? existing?.member_type ?? null,
+		request_id: transitionInput.request_id ?? existing?.request_id ?? null,
+		spawn_task_id: transitionInput.spawn_task_id ?? existing?.spawn_task_id ?? null,
+		runtime_id: transitionInput.runtime_id ?? existing?.runtime_id ?? null,
+		session_id: transitionInput.session_id ?? existing?.session_id ?? null,
+		task_summary: transitionInput.task_summary,
+		metadata: transitionInput.metadata ?? existing?.metadata ?? null,
+		emitted: {
+			...(existing?.emitted ?? {}),
+			[event]: {
+				event_id: fullEvent.event_id,
+				occurred_at: fullEvent.occurred_at,
+				reply_message_id: transitionInput.reply_message_id ?? null,
+			},
+		},
+		latest_event: fullEvent,
+		created_at: existing?.created_at ?? now,
+		updated_at: now,
+	};
+
+	await writeTaskLifecycleReplay(roomDir, record);
+
+	return {
+		record,
+		event_id: fullEvent.event_id,
+		occurred_at: fullEvent.occurred_at,
+		is_replay: false,
+	};
 }
 
 async function listCrewAddRequestReplays(roomDir: string): Promise<CrewAddReplayRecord[]> {

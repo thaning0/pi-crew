@@ -30,6 +30,8 @@ export type RoomMessageKind = "task" | "info" | "question" | "completion" | "err
 export type PendingTerminalReplyHandoffState = "snapshot_pending" | "snapshot_done" | "reply_appended" | "owner_handoff_done";
 export type CrewExtensionPayload = Record<string, unknown>;
 
+import type { PublicTaskLifecycleEventName, PublicTaskLifecycleEvent } from "./task-integration-events.ts";
+
 export interface PendingTerminalReplyState {
 	taskSeq: number;
 	kind: Extract<RoomMessageKind, "completion" | "error" | "cancelled">;
@@ -387,4 +389,26 @@ export interface RoomSpawnAdapter {
 	 *  If not implemented, watchdog falls back to runtimeAlive=true
 	 *  (pure optimism — heartbeat freshness is always a separate check). */
 	checkLiveness?: (member: RoomMemberState) => Promise<boolean>;
+}
+
+export interface TaskLifecycleReplayRecord {
+	task_message_id: string;
+	task_seq: number;
+	room_id: string;
+	member_target: string;
+	member_type: string | null;
+	request_id: string | null;
+	spawn_task_id: string | null;
+	runtime_id: string | null;
+	session_id: string | null;
+	task_summary: string;
+	metadata: CrewExtensionPayload | null;
+	emitted: Partial<Record<PublicTaskLifecycleEventName, {
+		event_id: string;
+		occurred_at: string;
+		reply_message_id: string | null;
+	}>>;
+	latest_event: PublicTaskLifecycleEvent | null;
+	created_at: string;
+	updated_at: string;
 }

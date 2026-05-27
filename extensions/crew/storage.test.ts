@@ -33,6 +33,8 @@ import {
 	writeJsonAtomic,
 	writeRoomMemberState,
 	writeRoomMetadata,
+	upsertTaskLifecycleReplay,
+	readTaskLifecycleReplay,
 } from "./storage.ts";
 import { MutationProxyServer } from "./mutation-proxy.ts";
 import { MutationClient } from "./mutation-client.ts";
@@ -3275,6 +3277,247 @@ describe("Task target availability", () => {
 				kind: "task",
 				summary: "Should wait for recovery",
 			})).rejects.toThrow(/state is error/i);
+		});
+	});
+
+	describe("task lifecycle replay persistence", () => {
+		it("creates a replay record for a new task via upsert", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-task-replay-new",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+
+				const result = await upsertTaskLifecycleReplay(created.roomDir, {
+					event: "task:assigned",
+					task_status: "assigned",
+					task_message_id: "task-msg-1",
+					task_seq: 10,
+					room_id: created.metadata.roomId,
+					member_target: "worker-1",
+					member_type: "worker",
+					request_id: "req-1",
+					spawn_task_id: "spawn-1",
+					runtime_id: "rt-1",
+					session_id: "sess-1",
+					task_summary: "do the thing",
+				});
+
+				expect(result.is_replay).toBe(false);
+				expect(result.event_id).toMatch(/^crew-task-event-/);
+				expect(result.occurred_at).toEqual(expect.any(String));
+				expect(result.record.task_message_id).toBe("task-msg-1");
+				expect(result.record.task_seq).toBe(10);
+				expect(result.record.member_target).toBe("worker-1");
+				expect(result.record.member_type).toBe("worker");
+				expect(result.record.request_id).toBe("req-1");
+				expect(result.record.spawn_task_id).toBe("spawn-1");
+				expect(result.record.runtime_id).toBe("rt-1");
+				expect(result.record.session_id).toBe("sess-1");
+				expect(result.record.task_summary).toBe("do the thing");
+				expect(result.record.emitted["task:assigned"]).toBeDefined();
+				expect(result.record.emitted["task:assigned"]!.event_id).toBe(result.event_id);
+				expect(result.record.latest_event).toBeDefined();
+
+				const readBack = await readTaskLifecycleReplay(created.roomDir, "task-msg-1");
+				expect(readBack).toBeDefined();
+				expect(readBack!.task_message_id).toBe("task-msg-1");
+			});
+		});
+
+		it("transitions from assigned → started → terminal and preserves identity fields", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-task-replay-transition",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+
+				const assigned = await upsertTaskLifecycleReplay(created.roomDir, {
+					event: "task:assigned",
+					task_status: "assigned",
+					task_message_id: "task-msg-2",
+					task_seq: 20,
+					room_id: created.metadata.roomId,
+					member_target: "worker-2",
+					member_type: "worker",
+					request_id: "req-2",
+					spawn_task_id: "spawn-2",
+					runtime_id: "rt-2",
+					session_id: "sess-2",
+					task_summary: "phase one",
+				});
+				expect(assigned.is_replay).toBe(false);
+
+				const started = await upsertTaskLifecycleReplay(created.roomDir, {
+					event: "task:started",
+					task_status: "running",
+					task_message_id: "task-msg-2",
+					task_seq: 20,
+					room_id: created.metadata.roomId,
+					member_target: "worker-2",
+					member_type: "worker",
+					request_id: "req-2",
+					spawn_task_id: "spawn-2",
+					runtime_id: "rt-2b",
+					session_id: "sess-2b",
+					task_summary: "phase one",
+				});
+				expect(started.is_replay).toBe(false);
+				expect(started.event_id).not.toBe(assigned.event_id);
+
+				const completed = await upsertTaskLifecycleReplay(created.roomDir, {
+					event: "task:completed",
+					task_status: "completed",
+					task_message_id: "task-msg-2",
+					task_seq: 20,
+					room_id: created.metadata.roomId,
+					member_target: "worker-2",
+					member_type: "worker",
+					request_id: "req-2",
+					spawn_task_id: "spawn-2",
+					runtime_id: "rt-2b",
+					session_id: "sess-2b",
+					task_summary: "phase one",
+					reply_message_id: "reply-msg-1",
+				});
+				expect(completed.is_replay).toBe(false);
+				expect(completed.event_id).not.toBe(assigned.event_id);
+				expect(completed.event_id).not.toBe(started.event_id);
+
+				const persisted = await readTaskLifecycleReplay(created.roomDir, "task-msg-2");
+				expect(persisted).toBeDefined();
+				expect(persisted!.task_message_id).toBe("task-msg-2");
+				expect(persisted!.task_seq).toBe(20);
+				expect(persisted!.member_target).toBe("worker-2");
+				expect(persisted!.emitted["task:assigned"]).toBeDefined();
+				expect(persisted!.emitted["task:started"]).toBeDefined();
+				expect(persisted!.emitted["task:completed"]).toBeDefined();
+				expect(persisted!.emitted["task:completed"]!.reply_message_id).toBe("reply-msg-1");
+				expect(persisted!.latest_event!.event).toBe("task:completed");
+			});
+		});
+
+		it("preserves original task_message_id and task_seq across updates", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-task-replay-identity",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+
+				await upsertTaskLifecycleReplay(created.roomDir, {
+					event: "task:assigned",
+					task_status: "assigned",
+					task_message_id: "task-msg-3",
+					task_seq: 30,
+					room_id: created.metadata.roomId,
+					member_target: "worker-3",
+					member_type: "worker",
+					request_id: null,
+					spawn_task_id: null,
+					runtime_id: null,
+					session_id: null,
+					task_summary: "identity test",
+				});
+
+				await upsertTaskLifecycleReplay(created.roomDir, {
+					event: "task:completed",
+					task_status: "completed",
+					task_message_id: "task-msg-3",
+					task_seq: 30,
+					room_id: created.metadata.roomId,
+					member_target: "worker-3",
+					member_type: "worker",
+					request_id: null,
+					spawn_task_id: null,
+					runtime_id: null,
+					session_id: null,
+					task_summary: "identity test",
+					reply_message_id: "reply-late",
+				});
+
+				const persisted = await readTaskLifecycleReplay(created.roomDir, "task-msg-3");
+				expect(persisted).toBeDefined();
+				expect(persisted!.task_message_id).toBe("task-msg-3");
+				expect(persisted!.task_seq).toBe(30);
+				expect(persisted!.member_target).toBe("worker-3");
+				expect(persisted!.emitted["task:assigned"]).toBeDefined();
+				expect(persisted!.emitted["task:completed"]).toBeDefined();
+			});
+		});
+
+		it("returns the stored event without generating a second event id for the same transition", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-task-replay-dedup",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+
+				const first = await upsertTaskLifecycleReplay(created.roomDir, {
+					event: "task:assigned",
+					task_status: "assigned",
+					task_message_id: "task-msg-4",
+					task_seq: 40,
+					room_id: created.metadata.roomId,
+					member_target: "worker-4",
+					member_type: "worker",
+					request_id: null,
+					spawn_task_id: null,
+					runtime_id: null,
+					session_id: null,
+					task_summary: "dedup test",
+				});
+				expect(first.is_replay).toBe(false);
+
+				const second = await upsertTaskLifecycleReplay(created.roomDir, {
+					event: "task:assigned",
+					task_status: "assigned",
+					task_message_id: "task-msg-4",
+					task_seq: 40,
+					room_id: created.metadata.roomId,
+					member_target: "worker-4",
+					member_type: "worker",
+					request_id: null,
+					spawn_task_id: null,
+					runtime_id: "different-rt",
+					session_id: "different-sess",
+					task_summary: "dedup test",
+				});
+				expect(second.is_replay).toBe(true);
+				expect(second.event_id).toBe(first.event_id);
+				expect(second.occurred_at).toBe(first.occurred_at);
+			});
+		});
+
+		it("returns null when reading a non-existent replay record", async () => {
+			await withTempDir(async (tempDir) => {
+				const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+				const created = await createRoom({
+					runtimeRoot,
+					ownerName: "owner",
+					ownerSessionId: "owner-session-task-replay-readback",
+					cwd: tempDir,
+					ownerPid: process.pid,
+				});
+
+				const result = await readTaskLifecycleReplay(created.roomDir, "nonexistent-task");
+				expect(result).toBeNull();
+			});
 		});
 	});
 });
