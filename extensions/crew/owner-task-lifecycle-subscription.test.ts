@@ -22,6 +22,13 @@ import { createPiMemberAdapter, createPaseoPiMemberAdapter } from "./spawn.ts";
 import { appendTerminalTaskReplyAndNotify } from "./task-terminal.ts";
 import type { PublicTaskLifecycleEvent } from "./task-integration-events.ts";
 import type { RoomMemberState, RoomSpawnAdapter } from "./types.ts";
+import {
+	setRoomMutationClient,
+	deleteRoomMutationClient,
+} from "./storage.ts";
+import { MutationProxyServer } from "./mutation-proxy.ts";
+import { createMutationClient } from "./mutation-client.ts";
+import { executeCrewReply } from "./tools.ts";
 
 type RegisteredHandler = (event: unknown, ctx?: unknown) => unknown;
 
@@ -763,5 +770,451 @@ describe("owner-side task lifecycle subscriptions", () => {
 				),
 			).toHaveLength(1);
 		});
+	});
+
+	// ── Terminal event tests ───────────────────────────────────────────
+
+	it("direct owner crew_reply emits one terminal event with reply_message_id", async () => {
+		await withTempDir(async (tempDir) => {
+			const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+			const created = await createRoom({
+				runtimeRoot,
+				ownerName: "owner",
+				ownerSessionId: "owner-session-terminal-direct",
+				cwd: tempDir,
+				ownerPid: process.pid,
+			});
+
+			await writeRoomMemberState(
+				created.roomDir,
+				createMemberState("worker_a"),
+			);
+
+			const adapters = createTestAdapters();
+			const ownerHarness = createOwnerHarness(adapters);
+
+			await ownerHarness.runLifecycle("session_start", {}, {
+				cwd: tempDir,
+				getSystemPrompt: () => "",
+				sessionManager: {
+					getSessionId: () => created.metadata.ownerSessionId,
+				},
+			});
+			setOwnerRoom({
+				roomDir: created.roomDir,
+				roomId: created.metadata.roomId,
+				sessionId: created.metadata.ownerSessionId,
+			});
+
+			const taskEvents: PublicTaskLifecycleEvent[] = [];
+			ownerHarness.onEvent("crew:task", (payload: unknown) => {
+				taskEvents.push(payload as PublicTaskLifecycleEvent);
+			});
+
+			// Assign a no-deps task to worker_a
+			const taskSeq = await sendOwnerTask(
+				tempDir,
+				runtimeRoot,
+				created.metadata.ownerSessionId,
+				{ to: "worker_a", summary: "Terminal direct test" },
+			);
+
+			// Move member to running to see task:started
+			const memberContext = setMemberActiveRoomContext(
+				created.roomDir,
+				created.metadata.roomId,
+				"worker_a-session",
+				"worker_a",
+			);
+			await processUnreadMessages(
+				{ sendMessage() { return undefined; } } as ExtensionAPI,
+				memberContext,
+			);
+
+			await waitFor(
+				() => taskEvents.some((e) => e.event === "task:started"),
+				{ message: "expected task:started" },
+			);
+
+			// Now owner sends crew_reply to complete the task
+			await executeCrewReply(
+				{ seq: taskSeq, summary: "Completed by owner", kind: "completion" },
+				{ sendMessage() { return undefined; } } as any,
+				{ cwd: tempDir, hasUI: false, sessionManager: { getSessionId: () => created.metadata.ownerSessionId } },
+				runtimeRoot,
+				{ pi: createPiMemberAdapter(), paseo: createPaseoPiMemberAdapter() },
+				{},
+			);
+
+			// Should see task:completed
+			await waitFor(
+				() => taskEvents.some((e) => e.event === "task:completed"),
+				{ message: "expected task:completed event" },
+			);
+
+			const completedEvent = taskEvents.find((e) => e.event === "task:completed");
+			expect(completedEvent).toBeDefined();
+			expect(completedEvent!.task_seq).toBe(taskSeq);
+			expect(completedEvent!.member_target).toBe("worker_a");
+			expect(completedEvent!.task_status).toBe("completed");
+			expect(completedEvent!.reply_message_id).toBeTruthy();
+			expect(completedEvent!.reply_summary).toBe("Completed by owner");
+
+			// Only one completed event
+			expect(
+				taskEvents.filter((e) => e.event === "task:completed" && e.task_seq === taskSeq),
+			).toHaveLength(1);
+		});
+	});
+
+	it("duplicate crew_reply retry does not emit a second terminal event", async () => {
+		await withTempDir(async (tempDir) => {
+			const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+			const created = await createRoom({
+				runtimeRoot,
+				ownerName: "owner",
+				ownerSessionId: "owner-session-terminal-dedup",
+				cwd: tempDir,
+				ownerPid: process.pid,
+			});
+
+			await writeRoomMemberState(
+				created.roomDir,
+				createMemberState("worker_a"),
+			);
+
+			const adapters = createTestAdapters();
+			const ownerHarness = createOwnerHarness(adapters);
+
+			await ownerHarness.runLifecycle("session_start", {}, {
+				cwd: tempDir,
+				getSystemPrompt: () => "",
+				sessionManager: {
+					getSessionId: () => created.metadata.ownerSessionId,
+				},
+			});
+			setOwnerRoom({
+				roomDir: created.roomDir,
+				roomId: created.metadata.roomId,
+				sessionId: created.metadata.ownerSessionId,
+			});
+
+			const taskEvents: PublicTaskLifecycleEvent[] = [];
+			ownerHarness.onEvent("crew:task", (payload: unknown) => {
+				taskEvents.push(payload as PublicTaskLifecycleEvent);
+			});
+
+			const taskSeq = await sendOwnerTask(
+				tempDir,
+				runtimeRoot,
+				created.metadata.ownerSessionId,
+				{ to: "worker_a", summary: "Dedup terminal test" },
+			);
+
+			// Move member to running
+			const memberContext = setMemberActiveRoomContext(
+				created.roomDir,
+				created.metadata.roomId,
+				"worker_a-session",
+				"worker_a",
+			);
+			await processUnreadMessages(
+				{ sendMessage() { return undefined; } } as ExtensionAPI,
+				memberContext,
+			);
+
+			await waitFor(
+				() => taskEvents.some((e) => e.event === "task:started"),
+				{ message: "expected task:started" },
+			);
+
+			// First reply
+			await executeCrewReply(
+				{ seq: taskSeq, summary: "First completion", kind: "completion" },
+				{ sendMessage() { return undefined; } } as any,
+				{ cwd: tempDir, hasUI: false, sessionManager: { getSessionId: () => created.metadata.ownerSessionId } },
+				runtimeRoot,
+				{ pi: createPiMemberAdapter(), paseo: createPaseoPiMemberAdapter() },
+				{},
+			);
+
+			await waitFor(
+				() => taskEvents.some((e) => e.event === "task:completed"),
+				{ message: "expected task:completed" },
+			);
+
+			expect(
+				taskEvents.filter((e) => e.event === "task:completed" && e.task_seq === taskSeq),
+			).toHaveLength(1);
+
+			// Duplicate reply — should be blocked
+			const dupResult = await executeCrewReply(
+				{ seq: taskSeq, summary: "Duplicate completion", kind: "completion" },
+				{ sendMessage() { return undefined; } } as any,
+				{ cwd: tempDir, hasUI: false, sessionManager: { getSessionId: () => created.metadata.ownerSessionId } },
+				runtimeRoot,
+				{ pi: createPiMemberAdapter(), paseo: createPaseoPiMemberAdapter() },
+				{},
+			);
+
+			// Should be rejected
+			expect(dupResult.isError).toBe(true);
+			expect(dupResult.content?.[0]?.text).toContain("already closed");
+
+			// Still only one completed event
+			expect(
+				taskEvents.filter((e) => e.event === "task:completed" && e.task_seq === taskSeq),
+			).toHaveLength(1);
+		});
+	});
+
+	it("blocked downstream tasks emit task:blocked_failed once", async () => {
+		await withTempDir(async (tempDir) => {
+			const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+			const created = await createRoom({
+				runtimeRoot,
+				ownerName: "owner",
+				ownerSessionId: "owner-session-blocked-downstream",
+				cwd: tempDir,
+				ownerPid: process.pid,
+			});
+
+			await writeRoomMemberState(
+				created.roomDir,
+				createMemberState("worker_a"),
+			);
+			await writeRoomMemberState(
+				created.roomDir,
+				createMemberState("worker_b"),
+			);
+
+			const adapters = createTestAdapters();
+			const ownerHarness = createOwnerHarness(adapters);
+
+			await ownerHarness.runLifecycle("session_start", {}, {
+				cwd: tempDir,
+				getSystemPrompt: () => "",
+				sessionManager: {
+					getSessionId: () => created.metadata.ownerSessionId,
+				},
+			});
+			setOwnerRoom({
+				roomDir: created.roomDir,
+				roomId: created.metadata.roomId,
+				sessionId: created.metadata.ownerSessionId,
+			});
+
+			const taskEvents: PublicTaskLifecycleEvent[] = [];
+			ownerHarness.onEvent("crew:task", (payload: unknown) => {
+				taskEvents.push(payload as PublicTaskLifecycleEvent);
+			});
+
+			// Upstream task for worker_a
+			const upstreamSeq = await sendOwnerTask(
+				tempDir,
+				runtimeRoot,
+				created.metadata.ownerSessionId,
+				{ to: "worker_a", summary: "Upstream will fail" },
+			);
+
+			// Downstream task for worker_b with dependency on upstream
+			const downstreamSeq = await sendOwnerTask(
+				tempDir,
+				runtimeRoot,
+				created.metadata.ownerSessionId,
+				{
+					to: "worker_b",
+					summary: "Downstream blocked on upstream",
+					content: `Use {input:#${upstreamSeq}} for context.`,
+				},
+			);
+
+			// Wait for assignment events for both tasks
+			await waitFor(
+				() => taskEvents.some((e) => e.task_seq === upstreamSeq),
+				{ message: "expected upstream task assignment event" },
+			);
+			await waitFor(
+				() =>
+					taskEvents.some(
+						(e) =>
+							e.task_seq === downstreamSeq &&
+							["task:assigned", "task:waiting_deps", "task:blocked_failed"].includes(e.event),
+					),
+				{ message: "expected downstream task assignment event" },
+			);
+
+			// Fail the upstream task (owner replies with error)
+			// First move worker_a to running
+			const memberCtx = setMemberActiveRoomContext(
+				created.roomDir,
+				created.metadata.roomId,
+				"worker_a-session",
+				"worker_a",
+			);
+			await processUnreadMessages(
+				{ sendMessage() { return undefined; } } as ExtensionAPI,
+				memberCtx,
+			);
+
+			await waitFor(
+				() =>
+					taskEvents.some(
+						(e) => e.task_seq === upstreamSeq && e.event === "task:started",
+					),
+				{ message: "expected upstream task:started" },
+			);
+
+			// Owner replies with error to upstream
+			await executeCrewReply(
+				{ seq: upstreamSeq, summary: "Upstream failed", kind: "error" },
+				{ sendMessage() { return undefined; } } as any,
+				{ cwd: tempDir, hasUI: false, sessionManager: { getSessionId: () => created.metadata.ownerSessionId } },
+				runtimeRoot,
+				{ pi: createPiMemberAdapter(), paseo: createPaseoPiMemberAdapter() },
+				{},
+			);
+
+			// Should see task:failed for upstream
+			await waitFor(
+				() =>
+					taskEvents.some(
+						(e) => e.task_seq === upstreamSeq && e.event === "task:failed",
+					),
+				{ message: "expected upstream task:failed" },
+			);
+
+			// Should see task:blocked_failed for downstream
+			await waitFor(
+				() =>
+					taskEvents.some(
+						(e) =>
+							e.task_seq === downstreamSeq &&
+							e.event === "task:blocked_failed",
+					),
+				{ message: "expected downstream task:blocked_failed" },
+			);
+
+			const blockedEvents = taskEvents.filter(
+				(e) =>
+					e.task_seq === downstreamSeq &&
+					e.event === "task:blocked_failed",
+			);
+			expect(blockedEvents).toHaveLength(1);
+			expect(blockedEvents[0].member_target).toBe("worker_b");
+			expect(blockedEvents[0].task_status).toBe("blocked_failed");
+		});
+	});
+
+	it("member crew_reply via notify_deps emits owner-side terminal event", async () => {
+		// Use a shorter temp dir to keep the Unix socket path under 108 bytes
+		const tmpDir = await fs.mkdtemp(
+			path.join(os.tmpdir(), "crew-tsk-"),
+		);
+		try {
+			const runtimeRoot = path.join(tmpDir, ".pi", "agent", "runtime", "rooms");
+			const created = await createRoom({
+				runtimeRoot,
+				ownerName: "owner",
+				ownerSessionId: "owner-session-proxy-terminal",
+				cwd: tmpDir,
+				ownerPid: process.pid,
+			});
+
+			await writeRoomMemberState(
+				created.roomDir,
+				createMemberState("worker_a"),
+			);
+
+			const adapters = createTestAdapters();
+			const ownerHarness = createOwnerHarness(adapters);
+
+			await ownerHarness.runLifecycle("session_start", {}, {
+				cwd: tmpDir,
+				getSystemPrompt: () => "",
+				sessionManager: {
+					getSessionId: () => created.metadata.ownerSessionId,
+				},
+			});
+			setOwnerRoom({
+				roomDir: created.roomDir,
+				roomId: created.metadata.roomId,
+				sessionId: created.metadata.ownerSessionId,
+			});
+
+			const taskEvents: PublicTaskLifecycleEvent[] = [];
+			ownerHarness.onEvent("crew:task", (payload: unknown) => {
+				taskEvents.push(payload as PublicTaskLifecycleEvent);
+			});
+
+			// Assign a task to worker_a
+			const taskSeq = await sendOwnerTask(
+				tmpDir,
+				runtimeRoot,
+				created.metadata.ownerSessionId,
+				{ to: "worker_a", summary: "Proxy terminal test" },
+			);
+
+			// Move member to running
+			const memberContext = setMemberActiveRoomContext(
+				created.roomDir,
+				created.metadata.roomId,
+				"worker_a-session",
+				"worker_a",
+			);
+			await processUnreadMessages(
+				{ sendMessage() { return undefined; } } as ExtensionAPI,
+				memberContext,
+			);
+
+			await waitFor(
+				() => taskEvents.some((e) => e.event === "task:started"),
+				{ message: "expected task:started" },
+			);
+
+			// Set up mutation proxy and reply as member
+			const proxy = new MutationProxyServer(created.roomDir);
+			await proxy.start();
+			const client = createMutationClient(created.roomDir);
+			await client.connect();
+			setRoomMutationClient(created.roomDir, client);
+
+			// Switch to member role
+			setMemberActiveRoomContext(
+				created.roomDir,
+				created.metadata.roomId,
+				"worker_a-session",
+				"worker_a",
+			);
+
+			try {
+				await executeCrewReply(
+					{ seq: taskSeq, summary: "Proxy completed", kind: "completion" },
+					{ sendMessage() { return undefined; } } as any,
+					{ cwd: tmpDir, hasUI: false, sessionManager: { getSessionId: () => "worker_a-session" } },
+					runtimeRoot,
+					{ pi: createPiMemberAdapter(), paseo: createPaseoPiMemberAdapter() },
+					{},
+				);
+
+				// Should see task:completed emitted by owner-side proxy handler
+				await waitFor(
+					() => taskEvents.some((e) => e.event === "task:completed"),
+					{ message: "expected task:completed via proxy" },
+				);
+
+				const completedEvent = taskEvents.find((e) => e.event === "task:completed");
+				expect(completedEvent).toBeDefined();
+				expect(completedEvent!.task_seq).toBe(taskSeq);
+				expect(completedEvent!.member_target).toBe("worker_a");
+				expect(completedEvent!.task_status).toBe("completed");
+			} finally {
+				client.disconnect();
+				deleteRoomMutationClient(created.roomDir);
+				await proxy.stop();
+			}
+		} finally {
+			await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+		}
 	});
 });

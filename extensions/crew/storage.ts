@@ -138,12 +138,13 @@ export async function tryNotifyDepsViaProxy(
 	upstreamSeq: number,
 	taskMessageId: string | undefined,
 	status: "completed" | "error" | "cancelled",
+	replyMessageId?: string,
 ): Promise<boolean> {
 	const client = getRoomMutationClient(roomDir);
 	if (!client || client.getState() !== "connected") return false;
 	await client.send<void>({
 		kind: "notify_deps",
-		payload: { upstreamSeq, taskMessageId, status },
+		payload: { upstreamSeq, taskMessageId, status, replyMessageId },
 	});
 	return true;
 }

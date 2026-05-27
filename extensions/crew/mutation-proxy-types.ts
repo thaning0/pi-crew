@@ -53,7 +53,7 @@ export type MutationCommand =
 	| { kind: "update_spawn_job"; payload: { taskId: string; patch: Partial<Omit<RoomSpawnJob, "taskId" | "memberName" | "backend" | "createdAt">> } }
 	| { kind: "delete_member"; payload: { memberName: string } }
 	| { kind: "run_locked_fn"; payload: { fnId: string; args?: unknown } }
-	| { kind: "notify_deps"; payload: { upstreamSeq: number; taskMessageId?: string; status: "completed" | "error" | "cancelled" } }
+	| { kind: "notify_deps"; payload: { upstreamSeq: number; taskMessageId?: string; status: "completed" | "error" | "cancelled"; replyMessageId?: string } }
 	| { kind: "remove_transient_member"; payload: { memberName: string; taskSummary: string; replyKind: "completion" | "error"; errorSummary?: string } }
 	| { kind: "spawn_agent"; payload: SpawnAgentPayload };
 

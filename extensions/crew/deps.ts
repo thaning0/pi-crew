@@ -23,8 +23,9 @@
  */
 
 import type { RoomMessage } from "./types.ts";
-import { listBoardEntries, appendMessage } from "./storage.ts";
+import { listBoardEntries, appendMessage, loadRoomMetadata, upsertTaskLifecycleReplay } from "./storage.ts";
 import { consoleError } from "./logger.ts";
+import { emitTaskLifecycleEvent } from "./task-integration-events.ts";
 
 // ── Module-level state (owned by the Owner process) ────────────────────────
 
@@ -122,6 +123,52 @@ async function ensureRoomLoaded(roomDir: string): Promise<void> {
 }
 
 // ── Closed-task helpers ────────────────────────────────────────────────────
+
+/**
+ * Emit a task:blocked_failed event for a downstream task.
+ * Used from both notifyBlockedDependentsOnTerminalFailure (early path)
+ * and notifyDependentsIfAllReady (late path when all deps are resolved but
+ * with errors/cancellations).
+ */
+async function emitBlockedFailedEvent(
+	roomDir: string,
+	taskSeq: number,
+	memberTarget: string,
+): Promise<void> {
+	const metadata = await loadRoomMetadata(roomDir).catch(() => null);
+	if (!metadata) return;
+
+	const taskMsg = (await listBoardEntries(roomDir, Number.MAX_SAFE_INTEGER))
+		.find((m) => m.seq === taskSeq && m.kind === "task" && m.to === memberTarget);
+	if (!taskMsg) return;
+
+	const replay = await upsertTaskLifecycleReplay(roomDir, {
+		event: "task:blocked_failed",
+		task_message_id: taskMsg.id,
+		task_seq: taskSeq,
+		room_id: metadata.roomId,
+		member_target: memberTarget,
+		task_summary: taskMsg.summary,
+	});
+
+	if (replay.is_replay) return;
+
+	await emitTaskLifecycleEvent({
+		event: "task:blocked_failed",
+		task_status: "blocked_failed",
+		room_id: metadata.roomId,
+		member_target: memberTarget,
+		task_seq: taskSeq,
+		task_message_id: taskMsg.id,
+		task_summary: taskMsg.summary,
+		content_ref: {
+			room_id: metadata.roomId,
+			message_id: taskMsg.id,
+			seq: taskSeq,
+			kind: "room_message",
+		},
+	}).catch(() => {});
+}
 
 export function isTaskClosed(roomDir: string, messageId: string): boolean {
 	const roomClosed = closedTaskIds.get(roomDir);
@@ -318,6 +365,11 @@ export async function notifyDependentsIfAllReady(
 		}
 		notifiedReadyTasks.add(dedupKey);
 
+		// Emit task:blocked_failed owner-side event when deps resolve with errors/cancellations
+		if (hasCancelled || hasError) {
+			emitBlockedFailedEvent(roomDir, taskSeq, task.to);
+		}
+
 		if (hasCancelled) {
 			await appendMessage(roomDir, {
 				from: "system",
@@ -452,6 +504,9 @@ export async function notifyBlockedDependentsOnTerminalFailure(
 			continue;
 		}
 		notifiedBlockedTasks.add(dedupKey);
+
+		// Emit task:blocked_failed owner-side event
+		emitBlockedFailedEvent(roomDir, taskSeq, task.to);
 
 		const content =
 			terminal === "cancelled"

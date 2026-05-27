@@ -447,6 +447,7 @@ export class MutationProxyServer {
           upstreamSeq: command.payload.upstreamSeq,
           taskMessageId: command.payload.taskMessageId,
           status: command.payload.status,
+          replyMessageId: command.payload.replyMessageId,
           logContext: {
             upstreamSeq: command.payload.upstreamSeq,
             source: "mutation-proxy",

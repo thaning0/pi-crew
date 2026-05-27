@@ -2500,10 +2500,11 @@ export async function executeCrewReply(
 				upstreamSeq: params.seq,
 				taskMessageId: original.id,
 				status: effectiveTaskState,
+				replyMessageId: msg.id,
 				logContext: { source: "crew_reply" },
 			});
 		} else {
-			const notifiedOwner = await tryNotifyDepsViaProxy(activeRoom.roomDir, params.seq, original.id, effectiveTaskState)
+			const notifiedOwner = await tryNotifyDepsViaProxy(activeRoom.roomDir, params.seq, original.id, effectiveTaskState, msg.id)
 				.catch((err) => {
 					consoleError("tools", "dep proxy notification failed (reply)", { roomDir: activeRoom.roomDir, upstreamSeq: params.seq, error: String(err) });
 					return false;
