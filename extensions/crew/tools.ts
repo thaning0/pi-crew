@@ -2858,7 +2858,7 @@ export async function executeExplore(
 			silent: true,
 		});
 		if (!routed) {
-			return textResult("Failed to spawn explorer: proxy connection unavailable.", true);
+			return textResult("Failed to dispatch explorer: unable to reach owner process.", true);
 		}
 	}
 

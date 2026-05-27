@@ -444,19 +444,12 @@ export default function roomExtension(
 			// via the proxy (Unix socket), avoiding process-local event bus limits.
 			if (activeRoom.proxyServer) {
 				activeRoom.proxyServer.setSpawnHandler(async (payload) => {
-					try {
-						await queueCrewAdd(payload, {
-							activeRoom,
-							sessionId,
-							ctx: { cwd: projectCwd, hasUI: false },
-							adapters,
-						});
-					} catch (err) {
-						createRoomLogger(activeRoom.roomDir, "room").error(
-							"explore spawn handler failed",
-							{ name: payload.name, type: payload.type, error: String(err) },
-						);
-					}
+					await queueCrewAdd(payload, {
+						activeRoom,
+						sessionId,
+						ctx: { cwd: projectCwd, hasUI: false },
+						adapters,
+					});
 				});
 			}
 		}
