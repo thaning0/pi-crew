@@ -252,7 +252,7 @@ export const CrewMessagesSchema = {
 	properties: {
 		limit: { type: "number", description: "Max messages to show (default 20)." },
 		before: { type: "number", description: "Only show messages before this sequence number." },
-		filter: { enum: ["all", "me", "task", "completion", "error", "info", "question", "cancelled", "progress"], description: "Filter messages by kind or 'me' for messages relevant to you." },
+		filter: { enum: ["all", "me", "task", "completion", "error", "info", "question", "cancelled", "progress", "explorer"], description: "Filter messages by kind or 'me' for messages relevant to you. Use 'explorer' to see explorer agent results." },
 	},
 	additionalProperties: false,
 };
@@ -306,5 +306,14 @@ export const CrewMergeSchema = {
 		commitMessage: { type: "string", description: "Optional custom commit message for the merge." },
 	},
 	required: ["name"],
+	additionalProperties: false,
+};
+
+export const ExploreSchema = {
+	type: "object",
+	properties: {
+		query: { type: "string", description: "Question or exploration objective for the explorer agent." },
+	},
+	required: ["query"],
 	additionalProperties: false,
 };

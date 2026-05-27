@@ -233,6 +233,7 @@ export interface QueuedCrewAddRequest {
 	model?: string;
 	task?: string;
 	transient?: boolean;
+	silent?: boolean;
 	request_id?: string;
 	activation?: CrewAddActivation;
 	hold_timeout_ms?: number;
