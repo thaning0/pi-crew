@@ -64,9 +64,11 @@ graph TB
 
 **pi-crew 不是又一个"多智能体框架"**--它是一个让你在 Paseo 中像管理团队一样管理 AI 助手的操作面板。
 
-https://github.com/user-attachments/assets/9402942a-4b91-4936-82ef-e122d18623be
+**[演示: 人在回路实时介入](https://github.com/user-attachments/assets/9402942a-4b91-4936-82ef-e122d18623be)**
+看看如何随时切换到任意子智能体的工作界面并实时接管。
 
-https://github.com/user-attachments/assets/1c6a8520-812c-4f67-ad9f-8d6e3c1be9f6
+**[演示: 审查-修复完整闭环](https://github.com/user-attachments/assets/1c6a8520-812c-4f67-ad9f-8d6e3c1be9f6)**
+完整闭环演示: 审查者发现问题 → 修复者处理 → 再审直到通过。
 
 ---
 
@@ -112,7 +114,6 @@ pi-crew 自动串联任务--下游任务等待上游完成,自动触发,无需�
 
 | 智能体 | 擅长 | Worktree 隔离 |
 |--------|------|:---:|
-| `explorer` | 快速探索代码库和网络信息 | |
 | `worker` | 通用编码,含独立 Git 分支 | ✅ |
 | `researcher` | 多源调研(代码+网络) | |
 | `planner` | 制定结构化实施方案 | |
@@ -120,6 +121,8 @@ pi-crew 自动串联任务--下游任务等待上游完成,自动触发,无需�
 | `code-quality-reviewer` | 代码质量审查 | |
 | `plan-consistency-reviewer` | 方案一致性验证 | |
 | `plan-evaluator` | 方案可行性评估 | |
+
+> 💡 **`explore` 工具**: 编排者和子智能体均可使用 `explore` 工具进行快速代码、文件与网络探索——内部由临时 explorer 智能体驱动，无需手动创建。
 
 ### 自定义智能体
 
@@ -188,6 +191,13 @@ pi.events.emit("crew:add", {
     metadata: { ticket: "AUTH-42" },
 });
 
+// 在创建的子进程中，其他插件可直接从 process.env 读取同样的
+// opaque bootstrap 负载。
+const rawExtensionPayload = process.env.PI_ROOM_EXTENSION_PAYLOAD;
+const extensionPayload = rawExtensionPayload
+    ? JSON.parse(rawExtensionPayload)
+    : null;
+
 // 后续消息仍然通过 member_target + crew:tell 路由。
 pi.events.emit("crew:tell", {
     to: "worker-01",
@@ -214,9 +224,12 @@ pi.events.emit("crew:release", {
 错误静默处理：非法参数或无 owner room 时记录日志，不抛异常、不阻塞事件总线。
 
 - 对外集成应订阅 `crew:event`，而不是直接读取 room 文件或 spawn-job 状态。
+- 公开的 `crew:event` 生命周期通知从 **owner session** 发布；请在 owner session 中订阅。
 - `member_target` 用于后续 `crew:tell` 路由；`spawn_task_id` 用于 `crew:release` / `crew:abort` 和代际恢复。
 - 重用同一个 `request_id` 会回放最新的 `crew:add` 结果，包括已知终态。
 - 对同一代际重用同一个 `command_id`，会回放此前的 `crew:release` 或 `crew:abort` 结果。
+- `metadata` 必须是 JSON 可序列化对象。crew 会在 `crew:event` 中回显并通过 `PI_ROOM_EXTENSION_PAYLOAD` 传递给子进程。
+- `PI_ROOM_EXTENSION_PAYLOAD` 是面向其他插件的 **opaque 透传通道**。crew 不会解析或解释其业务含义。
 - 事件投递是 best-effort 的；订阅方应使用 `event_id` 去重。
 
 ---
@@ -273,8 +286,8 @@ crew_batch {
 ### 模式 5:自动接力链
 
 ```bash
-crew_tell { to: "scout", kind: "task", content: "调研认证模块。完成后 @planner 汇报" }
-crew_tell { to: "planner", kind: "task", content: "依赖 scout 的结果 {input:#55}。制定方案后 @worker" }
+crew_tell { to: "researcher", kind: "task", content: "调研认证模块。完成后 @planner 汇报" }
+crew_tell { to: "planner", kind: "task", content: "依赖 researcher 的结果 {input:#55}。制定方案后 @worker" }
 crew_tell { to: "worker", kind: "task", content: "依赖 planner 的方案 {input:#56}。完成后回复" }
 ```
 

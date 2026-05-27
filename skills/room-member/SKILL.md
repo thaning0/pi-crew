@@ -10,6 +10,7 @@ As a room member (subagent), read your task, do the work, close the loop — eve
 - Use `crew_reply(seq=N, kind="completion", summary="one-line", content="full report")` to close tasks. `summary` is displayed on the board; `content` holds ALL details, findings, code, and results.
 - Use `crew_read(seq=N)` to read task details or other messages.
 - Use `crew_messages(filter="me")` if you lose context.
+- Use `crew_messages(filter="explorer")` to read information relate to your task.
 - Do NOT report final results in plain text — only `crew_reply` delivers them to the owner.
 - If unable to complete, reply with `kind="error"` and include diagnostic details in `content`.
 - When handing off or notifying, include `@agent-name` in the `summary`.

@@ -116,7 +116,6 @@ pi-crew chains tasks automatically — each downstream task waits for its upstre
 
 | Agent | Best at | Worktree Isolated |
 |-------|--------|:---:|
-| `explorer` | Fast codebase & web exploration | |
 | `worker` | General coding, isolated git branch | ✅ |
 | `researcher` | Multi-source investigation (code + web) | |
 | `planner` | Structured implementation plans | |
@@ -124,6 +123,8 @@ pi-crew chains tasks automatically — each downstream task waits for its upstre
 | `code-quality-reviewer` | Code review & quality evaluation | |
 | `plan-consistency-reviewer` | Plan-vs-implementation consistency | |
 | `plan-evaluator` | Plan feasibility assessment | |
+
+> 💡 **`explore` tool**: Both the orchestrator and subagents can use the `explore` tool for quick code, file, and web exploration — powered internally by transient explorer agents. No need to spawn an explorer manually.
 
 ### Custom Agents
 
@@ -287,8 +288,8 @@ Reviewer examines existing artifact (design doc, code diff, implementation resul
 ### Pattern 5: Auto-Handoff Chain
 
 ```bash
-crew_tell { to: "explorer", kind: "task", content: "Investigate the auth module. @planner when done." }
-crew_tell { to: "planner", kind: "task", content: "Depends on explorer {input:#55}. Design then @worker." }
+crew_tell { to: "researcher", kind: "task", content: "Investigate the auth module. @planner when done." }
+crew_tell { to: "planner", kind: "task", content: "Depends on researcher {input:#55}. Design then @worker." }
 crew_tell { to: "worker", kind: "task", content: "Depends on planner {input:#56}. Implement and reply." }
 ```
 
