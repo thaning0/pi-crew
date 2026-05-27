@@ -276,6 +276,106 @@ type CrewLifecycleEvent = {
 - claimed-but-never-activated held members that are explicitly aborted or expire should emit `aborted`, not `terminated`
 - reusable stop flows that leave the member generation intact should not emit `terminated`
 
+## Public Task Lifecycle Surface
+
+All task lifecycle feedback is emitted on a dedicated channel, `crew:task`, parallel to `crew:event`. While `crew:event` tracks member generation lifecycle (spawn, claim, activation, termination), `crew:task` tracks per-task state transitions within a member generation.
+
+### `crew:task`
+
+This channel is **owner-only**: all task events are emitted by the owner, never by a member directly. External plugins subscribe to `crew:task` to observe task progress without inspecting room internals.
+
+```ts
+type PublicTaskLifecycleEvent = {
+  protocol_version: 1;
+  event_id: string;
+  occurred_at: string;
+  event:
+    | "task:assigned"
+    | "task:waiting_deps"
+    | "task:blocked_failed"
+    | "task:started"
+    | "task:completed"
+    | "task:failed"
+    | "task:cancelled";
+  task_status:
+    | "assigned"
+    | "waiting_deps"
+    | "blocked_failed"
+    | "running"
+    | "completed"
+    | "error"
+    | "cancelled";
+  room_id: string | null;
+  member_target: string | null;
+  member_type: string | null;
+  request_id: string | null;
+  spawn_task_id: string | null;
+  runtime_id: string | null;
+  session_id: string | null;
+  task_seq: number;
+  task_message_id: string;
+  task_summary: string;
+  reply_message_id: string | null;
+  reply_summary: string | null;
+  metadata: Record<string, unknown> | null;
+  content_ref: {
+    room_id: string;
+    message_id: string;
+    seq: number;
+    kind: "room_message";
+  };
+  error: string | null;
+  reason: string | null;
+};
+```
+
+### Event semantics and `task_status` mapping
+
+| Event | `task_status` | Emitted when |
+| --- | --- | --- |
+| `task:assigned` | `assigned` | Task created with no blocking deps and an idle member |
+| `task:waiting_deps` | `waiting_deps` | Task created but upstream dependencies are not yet resolved |
+| `task:blocked_failed` | `blocked_failed` | Task created but a dependency has failed or been cancelled, or upstream failure cascades to this task |
+| `task:started` | `running` | Owner observes the member transition from non-`running` to `running` state |
+| `task:completed` | `completed` | Owner records a terminal `completion` reply for the task |
+| `task:failed` | `error` | Owner records a terminal `error` reply for the task, or the task is failed via `crew_stop`, `crew_remove`, or watchdog loss |
+| `task:cancelled` | `cancelled` | Owner records a terminal `cancelled` reply for the task |
+
+### Owner-only emission rule
+
+All events on `crew:task` are emitted **exclusively by the owner**. This includes:
+
+- assignment events (`task:assigned`, `task:waiting_deps`, `task:blocked_failed`) emitted at owner-side task creation
+- `task:started` emitted when the owner observes a member state transition into `running`
+- terminal events (`task:completed`, `task:failed`, `task:cancelled`) emitted after the owner records the terminal task state
+
+Member code paths never emit `crew:task` directly. Even when a member performs a `crew_reply`, the terminal event is emitted by the owner after receiving the proxied reply. This guarantees a single authoritative emission point per task transition.
+
+### Payload contract
+
+Every `crew:task` event carries a full `content_ref` pointing to the board message. The `content_ref` is always a `room_message` reference (never a room filesystem path).
+
+Correlation fields (`member_target`, `member_type`, `request_id`, `spawn_task_id`, `runtime_id`, `session_id`) are frozen at emission time and populated from the owner-authoritative replay record. For `task:started` and terminal events, these fields include the full proxied correlation — even when the member performed the `crew_reply` through the mutation proxy.
+
+**no inline full content** — the v1 payload does not carry the full task content inline. The task summary is carried in `task_summary`, and the full content remains accessible through the board message referenced by `content_ref`.
+
+### ordering guarantees
+
+1. **Per-task ordering:** Events for the same `task_message_id` are emitted in owner-observed causal order: initial assignment (`task:assigned`, `task:waiting_deps`, or `task:blocked_failed`) → optional `task:started` → exactly one terminal event (`task:completed`, `task:failed`, or `task:cancelled`). No total ordering is guaranteed across different tasks.
+
+2. **Cross-channel ordering:** No strict global ordering is guaranteed between `crew:task` and `crew:event`. A `task:started` on `crew:task` may precede or follow a `claimed` or `activated` event on `crew:event`.
+
+3. **Started timing:** `task:started` is emitted after the owner persists the member's `running` state, but before or independently from the member-local silent `Starting:` info message. The `Starting:` board message is intentionally best-effort and non-authoritative; `task:started` on `crew:task` is the authoritative signal.
+
+4. **Terminal timing:** Terminal events are emitted only after the reply message already exists on the board and the owner has successfully recorded the terminal task state.
+
+5. **Idempotency:** Retries, reconnects, duplicate `crew_reply` attempts, and repeated running-state patches must not emit a second event with a new `event_id` for the same transition. The owner uses a persisted replay record to deduplicate emissions.
+
+### Non-goals
+
+- **`task:agent_lost` is omitted.** `agentLost` remains a derived presentation state (computed by `crew_tasks`), not a durable task transition. It has no corresponding `crew:task` event in v1.
+- **No inline full content.** The `content_ref` field provides a stable reference to the board message; the full message body must be read through the room message board.
+
 ## Identity Rules
 
 The protocol deliberately separates caller correlation from crew ownership.
