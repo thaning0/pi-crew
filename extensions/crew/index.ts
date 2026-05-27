@@ -94,6 +94,7 @@ import {
 	setCrewEventEmitter,
 	toPublicCrewLifecycleEvent,
 } from "./integration-events.ts";
+import { setTaskEventEmitter } from "./task-integration-events.ts";
 import {
 	ensureOwnerInfrastructure,
 	ensureOwnerRoom,
@@ -103,6 +104,17 @@ import { ValidationError } from "./errors.ts";
 
 export { resetActiveRoomsForTests } from "./lifecycle.ts";
 export * from "./integration-events.ts";
+export {
+	buildTaskLifecycleEvent,
+	emitTaskLifecycleEvent,
+	setTaskEventEmitter,
+} from "./task-integration-events.ts";
+export type {
+	PublicTaskLifecycleEvent,
+	PublicTaskLifecycleEventName,
+	PublicTaskStatus,
+	TaskLifecycleEventInput,
+} from "./task-integration-events.ts";
 
 const MAX_CREW_ADD_HOLD_TIMEOUT_MS = 2_147_483_647;
 
@@ -347,6 +359,14 @@ export default function roomExtension(
 			await pi.events.emit("crew:event", payload);
 		} catch {
 			// Best-effort only: never let outbound lifecycle feedback crash room handling.
+		}
+	});
+
+	setTaskEventEmitter(async (payload) => {
+		try {
+			await pi.events.emit("crew:task", payload);
+		} catch {
+			// Best-effort only.
 		}
 	});
 
