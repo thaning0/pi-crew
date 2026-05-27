@@ -929,6 +929,7 @@ export async function queueCrewAdd(
 				from: activeRoom.memberName,
 				to: internalName,
 				mentions: taskMentions.length > 0 ? taskMentions : undefined,
+				silent: params.silent === true ? true : undefined,
 				...getBatchDirectedTaskMessageOptions(batchContext),
 				replyTo: null,
 				summary: annotated.summary,
@@ -2327,6 +2328,14 @@ export async function executeCrewMessages(
 			e.to === activeRoom.memberName ||
 			(e.mentions?.includes(activeRoom.memberName) ?? false),
 		);
+	} else if (filter === "explorer") {
+		const members = await listRoomMembers(activeRoom.roomDir).catch(() => []);
+		const explorerNames = new Set(
+			members
+				.filter((m) => m.type === "explorer")
+				.map((m) => m.name)
+		);
+		entries = entries.filter((e) => explorerNames.has(e.from));
 	} else if (filter !== "all") {
 		entries = entries.filter((e) => e.kind === filter);
 	}
@@ -2813,4 +2822,32 @@ export async function executeCrewTasks(
 		return `#${r.task.seq} 📋 ${r.task.summary}${progress} → ${emoji} ${r.status} (${assignee})${elapsed}`;
 	}).join("\n");
 	return textResult(text);
+}
+
+export async function executeExplore(
+	rawParams: unknown,
+	pi: ExtensionAPI,
+	ctx: RoomExecCtx,
+	runtimeRoot: string,
+	adapters: { pi: RoomSpawnAdapter; paseo: RoomSpawnAdapter },
+	options: { ownerName?: string; beforeDeliverMessage?: (context: { roomDir: string; memberName: string; message: RoomMessage }) => Promise<void> | void; beforeOwnerHeartbeatWrite?: (context: { roomDir: string; roomId: string; sessionId: string }) => Promise<void> | void },
+): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: true }> {
+	const params = rawParams as { query: string };
+
+	if (!isNonEmptyString(params.query)) {
+		return textResult("Explore requires a non-empty query.", true);
+	}
+
+	const { room } = await resolveRoomAndSession(pi, ctx, runtimeRoot, adapters, options);
+	const activeRoom = room ?? getActiveRoom(getSessionId(ctx));
+	if (!activeRoom) {
+		return textResult("No active room for this session.", true);
+	}
+
+	const name = `explorer-${randomUUID().slice(0, 8)}`;
+	const task = params.query;
+
+	pi.events.emit("crew:add", { name, type: "explorer", task, transient: true, silent: true });
+
+	return textResult(`Spawned explorer "${name}" to investigate query. The explorer will post findings to the board when complete. Use crew_messages(filter="explorer") to view results.`);
 }
