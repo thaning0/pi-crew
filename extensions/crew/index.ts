@@ -1500,7 +1500,7 @@ export default function roomExtension(
 		name: "explore",
 		label: "Explore",
 		description:
-			"Spawn a transient explorer agent to investigate a question and post findings to the board. Use crew_messages(filter='explorer') to view results.",
+			"Spawn a transient explorer agent to investigate a question. Results will be pushed to you.",
 		parameters: ExploreSchema,
 		async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
 			const currentModel = ctx.model

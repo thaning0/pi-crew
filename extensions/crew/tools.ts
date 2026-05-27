@@ -2863,5 +2863,5 @@ export async function executeExplore(
 		}
 	}
 
-	return textResult(`Use crew_messages(filter="explorer") to view results.`);
+	return textResult("Results will be pushed to you once the explorer completes.");
 }
