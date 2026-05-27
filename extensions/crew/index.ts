@@ -1520,7 +1520,7 @@ export default function roomExtension(
 		name: "explore",
 		label: "Explore",
 		description:
-			"Use when you need to explore code, files, or the web.",
+			"Use when you need to explore code, files, or the web. Prefer this for broad and fuzzy exploration where you need to build an overall understanding, look for clues or any fuzzy details.",
 		parameters: ExploreSchema,
 		async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
 			const currentModel = ctx.model
