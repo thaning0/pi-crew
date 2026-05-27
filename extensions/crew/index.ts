@@ -51,10 +51,12 @@ import {
 	executeCrewWho,
 	executeCrewTasks,
 	executeCrewControl,
+	executeExplore,
 	queueCrewAdd,
 	queueCrewTell,
 } from "./tools.ts";
 import { CrewBatchSchema } from "./schemas.ts";
+import { ExploreSchema } from "./schemas.ts";
 import { executeCrewBatch } from "./batch.ts";
 import { CREW_BATCH_TOOL_DESCRIPTION } from "./batch-templates.ts";
 import { cancelPendingSpawnJobs, reapRoom } from "./watchdog.ts";
@@ -242,6 +244,7 @@ function normalizeCrewAddEventData(rawData: unknown): QueuedCrewAddRequest {
 		model: readOptionalTrimmedString(rawData.model),
 		task: readOptionalTrimmedString(rawData.task),
 		transient: rawData.transient === true || undefined,
+		silent: rawData.silent === true || undefined,
 		activation,
 		hold_timeout_ms,
 		metadata,
@@ -569,6 +572,7 @@ export default function roomExtension(
 				"crew_read",
 				"crew_who",
 				"crew_tasks",
+				"explore",
 			];
 			const crewManageToolNames = [
 				"crew_add",
@@ -1320,7 +1324,7 @@ export default function roomExtension(
 		name: "crew_messages",
 		label: "Crew Messages",
 		description:
-			"List recent crew messages on the board. Use filter: 'me' to see messages relevant to you.",
+			"List recent crew messages on the board. Use filter: 'me' to see messages relevant to you. Use filter: 'explorer' to see explorer agent results.",
 		parameters: CrewMessagesSchema,
 		async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
 			const currentModel = ctx.model
@@ -1455,6 +1459,31 @@ export default function roomExtension(
 				rawParams,
 				pi,
 				{ ...ctx, currentModel, currentThinkingLevel },
+				runtimeRoot,
+				adapters,
+				{
+					ownerName,
+					beforeDeliverMessage: options.beforeDeliverMessage,
+					beforeOwnerHeartbeatWrite: options.beforeOwnerHeartbeatWrite,
+				},
+			) as any;
+		},
+	});
+
+	registerTool({
+		name: "explore",
+		label: "Explore",
+		description:
+			"Spawn a transient explorer agent to investigate a question and post findings to the board. Use crew_messages(filter='explorer') to view results.",
+		parameters: ExploreSchema,
+		async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
+			const currentModel = ctx.model
+				? `${ctx.model.provider}/${ctx.model.id}`
+				: undefined;
+			return executeExplore(
+				rawParams,
+				pi,
+				{ ...ctx, currentModel },
 				runtimeRoot,
 				adapters,
 				{
