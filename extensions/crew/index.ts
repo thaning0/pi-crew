@@ -540,6 +540,18 @@ export default function roomExtension(
 							startOwnerHeartbeat,
 							beforeOwnerHeartbeatWrite: options.beforeOwnerHeartbeatWrite,
 						});
+
+						// Register explorer spawn handler (mirrors session_start).
+						if (activeRoom.proxyServer) {
+							activeRoom.proxyServer.setSpawnHandler(async (payload) => {
+								await queueCrewAdd(payload, {
+									activeRoom,
+									sessionId,
+									ctx: { cwd: projectCwd, hasUI: false },
+									adapters,
+								});
+							});
+						}
 					}
 				} catch (err) {
 					createRoomLogger(null, "room").error(
