@@ -25,8 +25,11 @@ export function loadTypedRoomAgentDefinition(memberType: string, cwd?: string): 
 	return loadAgentDefinition(memberType, cwd);
 }
 
+/** Agent types that should not appear as directly-spawnable subagents. */
+const HIDDEN_AGENT_TYPES = new Set(["explorer"]);
+
 export function listRoomAgentTypes(cwd?: string): Array<{ type: string; description: string; tools?: string[] }> {
-	return listAgentTypes(cwd);
+	return listAgentTypes(cwd).filter((t) => !HIDDEN_AGENT_TYPES.has(t.type));
 }
 
 export function buildRoomMemberSystemPrompt(

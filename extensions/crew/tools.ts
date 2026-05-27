@@ -2163,7 +2163,7 @@ export async function executeCrewRoles(
 	_adapters: { pi: RoomSpawnAdapter; paseo: RoomSpawnAdapter },
 	_options: { ownerName: string; beforeDeliverMessage?: (context: { roomDir: string; memberName: string; message: RoomMessage }) => Promise<void> | void; beforeOwnerHeartbeatWrite?: (context: { roomDir: string; roomId: string; sessionId: string }) => Promise<void> | void },
 ): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: true }> {
-	const types = listRoomAgentTypes(_ctx.cwd).filter((t) => t.type !== "explorer");
+	const types = listRoomAgentTypes(_ctx.cwd);
 	const text = types.length === 0
 		? "(no agent types found)"
 		: types.map((t) => `- ${t.type}: ${t.description}${t.tools ? ` [tools: ${t.tools.join(", ")}]` : ""}`).join("\n");
