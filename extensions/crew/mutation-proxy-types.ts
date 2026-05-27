@@ -36,6 +36,8 @@ export interface SpawnAgentPayload {
 	task: string;
 	transient: boolean;
 	silent: boolean;
+	/** Member name of the agent that initiated the spawn (used for board message attribution). */
+	callerName?: string;
 }
 
 export type MutationCommand =

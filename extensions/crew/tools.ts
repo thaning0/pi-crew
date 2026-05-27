@@ -926,7 +926,7 @@ export async function queueCrewAdd(
 			);
 			initialTaskUnresolvedMentions = unresolvedMentions;
 			const taskMsg = await appendDirectedTaskMessage(activeRoom.roomDir, {
-				from: activeRoom.memberName,
+				from: params.callerName ?? activeRoom.memberName,
 				to: internalName,
 				mentions: taskMentions.length > 0 ? taskMentions : undefined,
 				silent: params.silent === true ? true : undefined,
@@ -2147,7 +2147,7 @@ export async function executeCrewRoles(
 	_adapters: { pi: RoomSpawnAdapter; paseo: RoomSpawnAdapter },
 	_options: { ownerName: string; beforeDeliverMessage?: (context: { roomDir: string; memberName: string; message: RoomMessage }) => Promise<void> | void; beforeOwnerHeartbeatWrite?: (context: { roomDir: string; roomId: string; sessionId: string }) => Promise<void> | void },
 ): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: true }> {
-	const types = listRoomAgentTypes(_ctx.cwd);
+	const types = listRoomAgentTypes(_ctx.cwd).filter((t) => t.type !== "explorer");
 	const text = types.length === 0
 		? "(no agent types found)"
 		: types.map((t) => `- ${t.type}: ${t.description}${t.tools ? ` [tools: ${t.tools.join(", ")}]` : ""}`).join("\n");
@@ -2856,6 +2856,7 @@ export async function executeExplore(
 			task,
 			transient: true,
 			silent: true,
+			callerName: activeRoom.memberName,
 		});
 		if (!routed) {
 			return textResult("Failed to dispatch explorer: unable to reach owner process.", true);

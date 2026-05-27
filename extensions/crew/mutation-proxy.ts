@@ -517,7 +517,15 @@ export class MutationProxyServer {
         if (!this.spawnHandler) {
           throw new Error("spawn_agent handler not registered");
         }
-        await this.spawnHandler(command.payload);
+        // Fire-and-forget: spawn is async and may take >10s (process creation,
+        // bootstrap claim, finalization). Blocking the PQueue for the full
+        // duration causes the agent's MutationClient send() to time out
+        // (SEND_TIMEOUT_MS). The agent only needs to know the command was
+        // received; the spawned explorer reports results independently via the
+        // board (crew_messages).
+        this.spawnHandler(command.payload).catch((err) => {
+          this.logger.error("spawn_agent background handler failed", { error: String(err) });
+        });
         return undefined;
       }
 

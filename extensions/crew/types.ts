@@ -238,6 +238,10 @@ export interface QueuedCrewAddRequest {
 	activation?: CrewAddActivation;
 	hold_timeout_ms?: number;
 	metadata?: CrewExtensionPayload;
+	/** Override the board message sender. When a sub-agent spawns via proxy,
+	 *  the owner's activeRoom.memberName is "lead"; pass the caller's name here
+	 *  so the board correctly attributes the spawn task and routes the reply. */
+	callerName?: string;
 }
 
 export interface CrewAddReplaySeed {
