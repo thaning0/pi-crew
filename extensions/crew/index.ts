@@ -1500,7 +1500,7 @@ export default function roomExtension(
 		name: "explore",
 		label: "Explore",
 		description:
-			"Spawn a transient explorer agent to investigate a question. Results will be pushed to you.",
+			"Use when you need to explore code, files, or the web.",
 		parameters: ExploreSchema,
 		async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
 			const currentModel = ctx.model
