@@ -44,6 +44,9 @@ export function buildRoomMemberSystemPrompt(
 			: null,
 		`IMPORTANT: When your task is complete, report results via crew_reply — use summary for a one-line result, and content for the full report. Do not describe your final results in plain text; that output is not automatically delivered to the task owner. During work, normal tool use and progress output is fine.`,
 		skillBody || null,
+		bootstrap.memberType !== "explorer"
+			? `## Explorer Context Preheating\nBefore exploring the codebase from scratch, check if an explorer agent has already gathered relevant context:\n- Use crew_messages(filter="explorer") to view past and in-progress exploration results persisted on the board.\n- If no suitable results exist, use the explore tool to spawn a transient explorer agent: explore(query="your question here").\n- Explorer agents run independently and post their findings to the board when done — no need to wait for them.`
+			: null,
 		effectiveTypedAgent?.systemPrompt ? `---\n## Your Role-Specific Instructions\n${effectiveTypedAgent.systemPrompt}` : null,
 	].filter((section): section is string => Boolean(section && section.trim().length > 0)).join("\n\n");
 }
