@@ -181,18 +181,17 @@ function computeHeartbeatStaleMs(memberType: string): number {
  * Try to spawn an agent through the agent's MutationClient.
  * Used by the `explore` tool in member processes to spawn transient
  * explorer agents via the owner's mutation proxy.
- * Returns true if routed through proxy, false if no client (owner path).
+ * Returns true if routed, false if proxy unavailable.
  */
 export async function spawnAgentViaProxy(
 	roomDir: string,
 	payload: SpawnAgentPayload,
 ): Promise<boolean> {
+	const client = getRoomMutationClient(roomDir);
+	if (!client || client.getState() !== "connected") return false;
 	try {
-		const result = await tryViaMutationClient<undefined>(roomDir, {
-			kind: "spawn_agent",
-			payload,
-		});
-		return result !== undefined;
+		await client.send<void>({ kind: "spawn_agent", payload });
+		return true;
 	} catch (err) {
 		const log = createRoomLogger(roomDir, "storage");
 		log.warn("spawnAgentViaProxy: proxy send failed", { error: String(err) });
