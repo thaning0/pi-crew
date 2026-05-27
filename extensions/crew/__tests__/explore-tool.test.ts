@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { ExploreSchema, CrewMessagesSchema } from "../schemas.ts";
-import type { RoomMemberState, RoomMessage } from "../types.ts";
+import type { RoomMemberState, RoomMessage, QueuedCrewAddRequest } from "../types.ts";
 
 // --- Helpers ---
 
@@ -148,5 +148,16 @@ describe("silent: the message contract", () => {
             silent: true,
         };
         expect(msg.silent).toBe(true);
+    });
+
+    it("QueuedCrewAddRequest.silent field exists for event bus data", () => {
+        const req: QueuedCrewAddRequest = {
+            name: "explorer_abc",
+            type: "explorer",
+            task: "find auth",
+            transient: true,
+            silent: true,
+        };
+        expect(req.silent).toBe(true);
     });
 });
