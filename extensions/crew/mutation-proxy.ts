@@ -17,6 +17,7 @@ import {
   type ProxyRequest,
   type ProxyResponse,
   type MutationCommand,
+  type SpawnAgentPayload,
   createFrameParser,
   encodeFrame,
   getProxySocketPath,
@@ -56,6 +57,7 @@ export class MutationProxyServer {
   private server: net.Server | null = null;
   private readonly connections = new Set<net.Socket>();
   private accepting = false;
+  private spawnHandler: ((payload: SpawnAgentPayload) => Promise<void>) | null = null;
 
   constructor(roomDir: string) {
     this.roomDir = roomDir;
@@ -78,6 +80,14 @@ export class MutationProxyServer {
    */
   async enqueue<T>(fn: () => Promise<T>): Promise<T> {
     return await this.queue.add(fn) as T;
+  }
+
+  // -----------------------------------------------------------------------
+  // Handler Registration
+  // -----------------------------------------------------------------------
+
+  setSpawnHandler(handler: (payload: SpawnAgentPayload) => Promise<void>): void {
+    this.spawnHandler = handler;
   }
 
   // -----------------------------------------------------------------------
@@ -500,6 +510,14 @@ export class MutationProxyServer {
           broadcast: false,
         });
         this.logger.info("remove_transient_member done", { memberName });
+        return undefined;
+      }
+
+      case "spawn_agent": {
+        if (!this.spawnHandler) {
+          throw new Error("spawn_agent handler not registered");
+        }
+        await this.spawnHandler(command.payload);
         return undefined;
       }
 

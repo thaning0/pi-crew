@@ -30,6 +30,14 @@ export interface FinalizeMemberRuntimePayload {
 	backend: RoomBackend;
 }
 
+export interface SpawnAgentPayload {
+	name: string;
+	type: string;
+	task: string;
+	transient: boolean;
+	silent: boolean;
+}
+
 export type MutationCommand =
 	| { kind: "append_message"; payload: { message: Omit<RoomMessage, "seq" | "id" | "createdAt"> & Partial<Pick<RoomMessage, "id" | "createdAt">> } }
 	| { kind: "update_member"; payload: { memberName: string; patch: Partial<RoomMemberState> } }
@@ -44,7 +52,8 @@ export type MutationCommand =
 	| { kind: "delete_member"; payload: { memberName: string } }
 	| { kind: "run_locked_fn"; payload: { fnId: string; args?: unknown } }
 	| { kind: "notify_deps"; payload: { upstreamSeq: number; taskMessageId?: string; status: "completed" | "error" | "cancelled" } }
-	| { kind: "remove_transient_member"; payload: { memberName: string; taskSummary: string; replyKind: "completion" | "error"; errorSummary?: string } };
+	| { kind: "remove_transient_member"; payload: { memberName: string; taskSummary: string; replyKind: "completion" | "error"; errorSummary?: string } }
+	| { kind: "spawn_agent"; payload: SpawnAgentPayload };
 
 // ── Wire Protocol Messages ────────────────────────────────────────────────────
 

@@ -438,6 +438,27 @@ export default function roomExtension(
 				startOwnerHeartbeat,
 				beforeOwnerHeartbeatWrite: options.beforeOwnerHeartbeatWrite,
 			});
+
+			// Register the explore tool's spawn handler on the mutation proxy.
+			// This allows member processes to spawn transient explorer agents
+			// via the proxy (Unix socket), avoiding process-local event bus limits.
+			if (activeRoom.proxyServer) {
+				activeRoom.proxyServer.setSpawnHandler(async (payload) => {
+					try {
+						await queueCrewAdd(payload, {
+							activeRoom,
+							sessionId,
+							ctx: { cwd: projectCwd, hasUI: false },
+							adapters,
+						});
+					} catch (err) {
+						createRoomLogger(activeRoom.roomDir, "room").error(
+							"explore spawn handler failed",
+							{ name: payload.name, type: payload.type, error: String(err) },
+						);
+					}
+				});
+			}
 		}
 
 		// Set up mutation client for member (agent) processes so they

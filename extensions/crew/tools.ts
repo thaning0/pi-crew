@@ -148,7 +148,7 @@ import {
 	markTaskClosed,
 	setTaskState,
 } from "./deps.ts";
-import { tryNotifyDepsViaProxy, tryRemoveTransientViaProxy } from "./storage.ts";
+import { tryNotifyDepsViaProxy, tryRemoveTransientViaProxy, spawnAgentViaProxy } from "./storage.ts";
 import { MemberAlreadyExistsError, MemberNotFoundError, SpawnFailedError, ValidationError } from "./errors.ts";
 import { ensureOwnerInfrastructure } from "./owner-room.ts";
 import {
@@ -2847,7 +2847,20 @@ export async function executeExplore(
 	const name = `explorer-${randomUUID().slice(0, 8)}`;
 	const task = params.query;
 
-	pi.events.emit("crew:add", { name, type: "explorer", task, transient: true, silent: true });
+	if (activeRoom.role === "owner") {
+		pi.events.emit("crew:add", { name, type: "explorer", task, transient: true, silent: true });
+	} else {
+		const routed = await spawnAgentViaProxy(activeRoom.roomDir, {
+			name,
+			type: "explorer",
+			task,
+			transient: true,
+			silent: true,
+		});
+		if (!routed) {
+			return textResult("Failed to spawn explorer: proxy connection unavailable.", true);
+		}
+	}
 
 	return textResult(`Spawned explorer "${name}" to investigate query. The explorer will post findings to the board when complete. Use crew_messages(filter="explorer") to view results.`);
 }

@@ -8,8 +8,7 @@ import {
 } from "./dispatch.ts";
 import { withFileLock, type FileLockOptions } from "./lock.ts";
 import { createRoomLogger } from "./logger.ts";
-import {
-	buildCrewLifecycleEvent,
+import { buildCrewLifecycleEvent,
 	createCrewTerminatedLifecycleEvent,
 	emitCrewLifecycleEvent,
 } from "./integration-events.ts";
@@ -34,6 +33,7 @@ import type {
 } from "./types.ts";
 import { loadTypedRoomAgentDefinition } from "./bootstrap.ts";
 import type { MutationClient } from "./mutation-client.ts";
+import type { SpawnAgentPayload } from "./mutation-proxy-types.ts";
 
 // ── Mutation Proxy Registry ──────────────────────────────────────────────
 // Stores proxy server instances by roomDir for owner-side short-circuit.
@@ -175,6 +175,29 @@ function computeHeartbeatStaleMs(memberType: string): number {
 	}
 	const raw = Number(process.env.PI_ROOM_MEMBER_HEARTBEAT_STALE_MS ?? "5000");
 	return Number.isFinite(raw) && raw > 0 ? raw : 5000;
+}
+
+/**
+ * Try to spawn an agent through the agent's MutationClient.
+ * Used by the `explore` tool in member processes to spawn transient
+ * explorer agents via the owner's mutation proxy.
+ * Returns true if routed through proxy, false if no client (owner path).
+ */
+export async function spawnAgentViaProxy(
+	roomDir: string,
+	payload: SpawnAgentPayload,
+): Promise<boolean> {
+	try {
+		const result = await tryViaMutationClient<undefined>(roomDir, {
+			kind: "spawn_agent",
+			payload,
+		});
+		return result !== undefined;
+	} catch (err) {
+		const log = createRoomLogger(roomDir, "storage");
+		log.warn("spawnAgentViaProxy: proxy send failed", { error: String(err) });
+		return false;
+	}
 }
 
 /**
