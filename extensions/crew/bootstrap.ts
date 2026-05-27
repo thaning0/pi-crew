@@ -48,8 +48,10 @@ export function buildRoomMemberSystemPrompt(
 	].filter((section): section is string => Boolean(section && section.trim().length > 0)).join("\n\n");
 }
 
-/** Try to construct a RoomBootstrap from environment variables.
- *  Returns null if required env vars are missing (not a room member session). */
+/** Try to construct a RoomBootstrap from crew-owned environment variables.
+ *  Returns null if required env vars are missing (not a room member session).
+ *  Plugin-owned opaque passthrough vars such as PI_ROOM_EXTENSION_PAYLOAD are
+ *  intentionally left in process.env for other extensions to read directly. */
 export function parseRoomBootstrapFromEnv(): RoomBootstrap | null {
 	const roomId = process.env[ROOM_ENV.ROOM_ID];
 	const roomDir = process.env[ROOM_ENV.ROOM_DIR];

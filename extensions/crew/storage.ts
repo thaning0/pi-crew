@@ -2958,6 +2958,10 @@ async function maybePersistFirstClaimEventLocked(options: {
 		}),
 		updated_at: updatedAt,
 	});
+	await emitCrewLifecycleEvent(claimedEvent);
+	if (activatedEvent) {
+		await emitCrewLifecycleEvent(activatedEvent);
+	}
 	return { claimedEvent, activatedEvent };
 }
 

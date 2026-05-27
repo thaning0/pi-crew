@@ -135,7 +135,7 @@ Field semantics:
 - `request_id`: caller-owned correlation token echoed back on feedback events. It is also the caller's idempotency key within the active owner room. Re-sending the same logical request with the same `request_id` must not create a second generation.
 - `activation`: defaults to `"immediate"`. `"manual"` requests controlled activation.
 - `hold_timeout_ms`: optional hold lease for `activation: "manual"`. If omitted, crew uses a server-defined default. It is ignored for `activation: "immediate"`.
-- `metadata`: opaque caller payload echoed back in lifecycle events. `pi-crew` stores and forwards it but does not interpret its business meaning.
+- `metadata`: opaque caller payload echoed back in lifecycle events. `pi-crew` stores and forwards it but does not interpret its business meaning. It must be a JSON-serializable object, and the same payload is forwarded to the spawned child process as `PI_ROOM_EXTENSION_PAYLOAD` for other plugins to read directly from `process.env`.
 
 For idempotency, the material request fields are the normalized values of `name`, `type`, `model`, `task`, `transient`, `activation`, and `hold_timeout_ms` after trimming strings and applying protocol defaults. `hold_timeout_ms` is material only when the effective activation mode is `manual`; immediate requests normalize it away. `metadata` is not material for generation identity; the first accepted metadata payload wins for later replay and lifecycle echo.
 

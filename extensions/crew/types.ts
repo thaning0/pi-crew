@@ -28,6 +28,7 @@ export type CrewReplayDeliveryState = "pending" | "held" | "enabled" | "ended";
 export type CrewControlVerb = "release" | "abort";
 export type RoomMessageKind = "task" | "info" | "question" | "completion" | "error" | "cancelled" | "progress";
 export type PendingTerminalReplyHandoffState = "snapshot_pending" | "snapshot_done" | "reply_appended" | "owner_handoff_done";
+export type CrewExtensionPayload = Record<string, unknown>;
 
 export interface PendingTerminalReplyState {
 	taskSeq: number;
@@ -149,6 +150,8 @@ export const ROOM_ENV = {
 	BOOTSTRAP_TOKEN: "PI_ROOM_BOOTSTRAP_TOKEN",
 	OWNER_NAME: "PI_ROOM_OWNER_NAME",
 	OWNER_SESSION_ID: "PI_ROOM_OWNER_SESSION_ID",
+	/** Plugin-owned opaque passthrough; crew does not parse it into RoomBootstrap. */
+	EXTENSION_PAYLOAD: "PI_ROOM_EXTENSION_PAYLOAD",
 } as const;
 
 export interface RoomExecutionContext {
@@ -204,6 +207,9 @@ export interface SpawnMemberRequest {
 	 *  All fields (roomId, roomDir, memberName, token, etc.) are extracted
 	 *  into PI_ROOM_* env vars by each adapter. */
 	bootstrap?: RoomBootstrap;
+	/** Plugin-owned opaque payload serialized as PI_ROOM_EXTENSION_PAYLOAD.
+	 *  Crew forwards it at spawn time; member-side plugins read/process it directly. */
+	extensionPayload?: CrewExtensionPayload | null;
 	/** Owner's Paseo agent ID (from PASEO_AGENT_ID). Passed directly to the
 	 *  Paseo adapter so sub-agents are linked to the parent in the UI. */
 	parentPaseoAgentId?: string;
@@ -230,7 +236,7 @@ export interface QueuedCrewAddRequest {
 	request_id?: string;
 	activation?: CrewAddActivation;
 	hold_timeout_ms?: number;
-	metadata?: Record<string, unknown>;
+	metadata?: CrewExtensionPayload;
 }
 
 export interface CrewAddReplaySeed {
@@ -240,7 +246,7 @@ export interface CrewAddReplaySeed {
 	model: string | null;
 	task: string | null;
 	transient: boolean;
-	metadata?: Record<string, unknown> | null;
+	metadata?: CrewExtensionPayload | null;
 	activation: CrewAddActivation | null;
 	hold_timeout_ms: number | null;
 }
@@ -259,7 +265,7 @@ export interface CrewAddReplayableEvent {
 	runtime_id: string | null;
 	session_id: string | null;
 	activation: CrewAddActivation | null;
-	metadata: Record<string, unknown> | null;
+	metadata: CrewExtensionPayload | null;
 	delivery_state: CrewReplayDeliveryState | null;
 	hold_expires_at: string | null;
 	error: string | null;
@@ -290,7 +296,7 @@ export interface CrewAddReplayLifecycleSnapshot {
 	runtime_id: string | null;
 	session_id: string | null;
 	activation: CrewAddActivation | null;
-	metadata: Record<string, unknown> | null;
+	metadata: CrewExtensionPayload | null;
 	delivery_state: CrewReplayDeliveryState | null;
 	hold_expires_at: string | null;
 	delivery?: CrewAddReplayDeliveryGate | null;
@@ -310,7 +316,7 @@ export interface CrewAddReplayRecord {
 		task: string | null;
 		transient: boolean;
 	};
-	metadata: Record<string, unknown> | null;
+	metadata: CrewExtensionPayload | null;
 	activation: CrewAddActivation | null;
 	hold_timeout_ms: number | null;
 	member_name: string;
@@ -344,7 +350,7 @@ export interface QueuedCrewAddResult {
 	request_id?: string;
 	activation?: CrewAddActivation;
 	hold_timeout_ms?: number;
-	metadata?: Record<string, unknown>;
+	metadata?: CrewExtensionPayload;
 	initialTask?: QueuedTaskHandle;
 	initialTaskBoardError?: string;
 	unresolvedMentions: string[];

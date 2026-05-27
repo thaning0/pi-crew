@@ -337,6 +337,57 @@ describe("transient subagents", () => {
 		});
 	});
 
+	it("passes crew:add metadata to the spawn request as opaque extension payload", async () => {
+		await withTempDir(async (tempDir) => {
+			const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");
+			const sessionId = "owner-session-extension-payload";
+			const created = await createRoom({
+				runtimeRoot,
+				ownerName: "owner",
+				ownerSessionId: sessionId,
+				cwd: tempDir,
+				ownerPid: process.pid,
+			});
+			setOwnerActiveRoomContext(created, sessionId);
+			const metadata = { source: "other-plugin", ticket: "AUTH-42" };
+			const capturedSpawnRequests: any[] = [];
+
+			await queueCrewAdd(
+				{
+					request_id: "req-extension-payload",
+					name: "worker",
+					type: "worker",
+					metadata,
+				},
+				{
+					activeRoom: getActiveRoom(sessionId)!,
+					sessionId,
+					ctx: { cwd: tempDir, hasUI: false },
+					adapters: {
+						pi: {
+							kind: "pi",
+							async isAvailable() { return true; },
+							async spawn(request) {
+								capturedSpawnRequests.push(request);
+								return { runtimeId: "runtime-extension-payload", backend: "pi" };
+							},
+						},
+						paseo: {
+							kind: "paseo",
+							async isAvailable() { return false; },
+							async spawn() { throw new Error("not used"); },
+						},
+					},
+				},
+			);
+			await Promise.allSettled([...(getActiveRoom(sessionId)?.pendingToolTasks ?? [])]);
+
+			expect(capturedSpawnRequests).toHaveLength(1);
+			expect(capturedSpawnRequests[0]?.extensionPayload).toEqual(metadata);
+			expect(capturedSpawnRequests[0]?.bootstrap).not.toHaveProperty("extensionPayload");
+		});
+	});
+
 	it("emits spawn-level failed after generation creation and persists the replay snapshot", async () => {
 		await withTempDir(async (tempDir) => {
 			const runtimeRoot = path.join(tempDir, ".pi", "agent", "runtime", "rooms");

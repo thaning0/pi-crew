@@ -337,6 +337,32 @@ describe("crew:add request feedback", () => {
 		);
 	});
 
+	it("emits rejected for non-json-serializable metadata before queueing", async () => {
+		const harness = createHarness();
+		await cacheProjectCwd(harness.lifecycleHandlers);
+		setOwnerRoom();
+		const metadata: Record<string, unknown> = { source: "plugin" };
+		metadata.self = metadata;
+
+		harness.eventHandlers.get("crew:add")?.({
+			request_id: "req-bad-metadata-json",
+			name: "worker",
+			type: "builder",
+			metadata,
+		});
+		await flushAsyncWork(25);
+
+		expect(queueCrewAddMock).not.toHaveBeenCalled();
+		expect(crewEventPayloads(harness.emit)).toContainEqual(
+			expect.objectContaining({
+				event: "rejected",
+				phase: "request",
+				request_id: "req-bad-metadata-json",
+				requested_name: "worker",
+			}),
+		);
+	});
+
 	it("emits rejected for empty or whitespace-only request_id before queueing", async () => {
 		const harness = createHarness();
 		await cacheProjectCwd(harness.lifecycleHandlers);
@@ -652,55 +678,59 @@ describe("crew:add request feedback", () => {
 
 			const emit = vi.fn(async () => undefined);
 			const pi = {
-				events: { emit },
+				events: { emit: vi.fn(async () => undefined) },
 				sendMessage: vi.fn(),
 			} as any;
 			const adapters = {
 				pi: { kind: "pi", async spawn() { throw new Error("not used"); } },
 				paseo: { kind: "paseo", async spawn() { throw new Error("not used"); } },
 			};
-
-			await activateBootstrapRoom(
-				pi,
-				"",
-				"immediate-worker-session",
-				adapters as any,
-			);
-			await persistCrewAddReplayEvent({
-				roomDir: created.roomDir,
-				requestId: "req-activated-immediate",
-				event: buildCrewLifecycleEvent({
-					event: "enabled",
-					phase: "delivery",
-					request_id: "req-activated-immediate",
-					command_id: null,
-					requested_name: "immediate-worker",
-					member_target: "immediate-worker",
-					member_type: "worker",
-					room_id: created.metadata.roomId,
-					spawn_task_id: "spawn-activated-immediate",
-					runtime_id: "immediate-worker-session",
-					activation: "immediate",
-					metadata: { source: "event-feedback" },
-					delivery_state: "enabled",
-					hold_expires_at: null,
-					error: null,
-					reason: null,
-				}),
-			});
-			resetActiveRoomsForTests();
-			await activateBootstrapRoom(
-				pi,
-				"",
-				"immediate-worker-session",
-				adapters as any,
-			);
+			setCrewEventEmitter(emit);
+			try {
+				await activateBootstrapRoom(
+					pi,
+					"",
+					"immediate-worker-session",
+					adapters as any,
+				);
+				await persistCrewAddReplayEvent({
+					roomDir: created.roomDir,
+					requestId: "req-activated-immediate",
+					event: buildCrewLifecycleEvent({
+						event: "enabled",
+						phase: "delivery",
+						request_id: "req-activated-immediate",
+						command_id: null,
+						requested_name: "immediate-worker",
+						member_target: "immediate-worker",
+						member_type: "worker",
+						room_id: created.metadata.roomId,
+						spawn_task_id: "spawn-activated-immediate",
+						runtime_id: "immediate-worker-session",
+						activation: "immediate",
+						metadata: { source: "event-feedback" },
+						delivery_state: "enabled",
+						hold_expires_at: null,
+						error: null,
+						reason: null,
+					}),
+				});
+				resetActiveRoomsForTests();
+				await activateBootstrapRoom(
+					pi,
+					"",
+					"immediate-worker-session",
+					adapters as any,
+				);
+			} finally {
+				setCrewEventEmitter(null);
+			}
 
 			const activatedCalls = emit.mock.calls.filter(
-				([eventName, payload]) => eventName === "crew:event" && payload?.event === "activated",
+				([payload]) => payload?.event === "activated",
 			);
 			expect(activatedCalls).toHaveLength(1);
-			expect(activatedCalls[0]?.[1]).toMatchObject({
+			expect(activatedCalls[0]?.[0]).toMatchObject({
 				event: "activated",
 				phase: "activation",
 				request_id: "req-activated-immediate",

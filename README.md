@@ -189,8 +189,15 @@ pi.events.emit("crew:add", {
     activation: "manual",
     hold_timeout_ms: 30_000,
     request_id: "review-gate-01",
-    metadata: { ticket: "AUTH-42" },
+    metadata: { ticket: "AUTH-42", source: "my-plugin" },
 });
+
+// Inside the spawned child process, other plugins can read the same
+// opaque bootstrap payload directly from process.env.
+const rawExtensionPayload = process.env.PI_ROOM_EXTENSION_PAYLOAD;
+const extensionPayload = rawExtensionPayload
+    ? JSON.parse(rawExtensionPayload)
+    : null;
 
 // Follow-up routing still uses member_target via crew:tell.
 pi.events.emit("crew:tell", {
@@ -209,7 +216,7 @@ pi.events.emit("crew:release", {
 
 | Event | Parameters | Description |
 |-------|-----------|-------------|
-| `crew:add` | `name`, `type`, `task?`, `model?`, `transient?`, `request_id?`, `activation?`, `hold_timeout_ms?`, `metadata?` | Spawn a sub-agent with optional replay and controlled-activation hints |
+| `crew:add` | `name`, `type`, `task?`, `model?`, `transient?`, `request_id?`, `activation?`, `hold_timeout_ms?`, `metadata?` | Spawn a sub-agent with optional replay, controlled-activation hints, and plugin-owned bootstrap metadata |
 | `crew:tell` | `summary` (required), `to?`, `content?`, `kind?`, `broadcast?` | Send a message (kind defaults to `"info"`) |
 | `crew:release` | `spawn_task_id`, `command_id?`, `request_id?` | Open delivery for a held generation |
 | `crew:abort` | `spawn_task_id`, `command_id?`, `request_id?`, `reason?` | Discard a held generation before normal work starts |
@@ -218,9 +225,12 @@ pi.events.emit("crew:release", {
 Errors are silent: invalid data or missing owner room are logged without throwing or blocking the event bus.
 
 - Subscribe to `crew:event` instead of reading room files or spawn-job state directly.
+- Public `crew:event` lifecycle notifications are published from the **owner session**; subscribe there.
 - Use `member_target` for follow-up `crew:tell` routing; use `spawn_task_id` for generation-scoped `crew:release` / `crew:abort`.
 - Reuse the same `request_id` to replay the latest `crew:add` outcome, including known terminal outcomes.
 - Reuse the same `command_id` to replay the prior `crew:release` or `crew:abort` result for that generation.
+- `metadata` must be a JSON-serializable object. crew echoes it in `crew:event` and forwards it to the spawned child process as `PI_ROOM_EXTENSION_PAYLOAD`.
+- `PI_ROOM_EXTENSION_PAYLOAD` is an **opaque passthrough** for other plugins. crew does not parse or interpret its business meaning.
 - Event delivery is best-effort; deduplicate with `event_id`.
 
 ---

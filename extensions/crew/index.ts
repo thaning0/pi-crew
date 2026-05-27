@@ -116,6 +116,34 @@ function readOptionalString(value: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined;
 }
 
+function isJsonSerializable(
+	value: unknown,
+	seen = new Set<unknown>(),
+): boolean {
+	if (value === null) return true;
+	if (typeof value === "string" || typeof value === "boolean") return true;
+	if (typeof value === "number") return Number.isFinite(value);
+	if (
+		typeof value === "bigint"
+		|| typeof value === "function"
+		|| typeof value === "symbol"
+		|| typeof value === "undefined"
+	) {
+		return false;
+	}
+	if (typeof value !== "object") return false;
+	if (seen.has(value)) return false;
+	seen.add(value);
+	try {
+		if (Array.isArray(value)) {
+			return value.every((entry) => isJsonSerializable(entry, seen));
+		}
+		return Object.values(value).every((entry) => isJsonSerializable(entry, seen));
+	} finally {
+		seen.delete(value);
+	}
+}
+
 function buildCrewAddRejectionSeed(rawData: unknown): {
 	request_id?: string;
 	requested_name?: string;
@@ -200,6 +228,9 @@ function normalizeCrewAddEventData(rawData: unknown): QueuedCrewAddRequest {
 	if (rawData.metadata !== undefined) {
 		if (!isObjectRecord(rawData.metadata) || Array.isArray(rawData.metadata)) {
 			throw new ValidationError("metadata must be an object when provided.");
+		}
+		if (!isJsonSerializable(rawData.metadata)) {
+			throw new ValidationError("metadata must be a JSON-serializable object when provided.");
 		}
 		metadata = rawData.metadata;
 	}

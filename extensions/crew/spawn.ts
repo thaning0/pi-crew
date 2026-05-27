@@ -240,6 +240,13 @@ async function writeRuntimeIdentity(
 	}).catch((err) => createRoomLogger(roomDir, "spawn").warn("writeRuntimeIdentity failed", { memberName, error: String(err) }));
 }
 
+function serializeExtensionPayloadEnv(
+	payload: SpawnMemberRequest["extensionPayload"],
+): string | null {
+	if (!payload) return null;
+	return JSON.stringify(payload);
+}
+
 export function createPiMemberAdapter(options?: {
 	spawnProcess?: typeof spawn;
 }): RoomSpawnAdapter & {
@@ -277,6 +284,8 @@ export function createPiMemberAdapter(options?: {
 				if (b.ownerName) roomEnv.PI_ROOM_OWNER_NAME = b.ownerName;
 				if (b.ownerSessionId) roomEnv.PI_ROOM_OWNER_SESSION_ID = b.ownerSessionId;
 			}
+			const extensionPayloadEnv = serializeExtensionPayloadEnv(request.extensionPayload);
+			if (extensionPayloadEnv) roomEnv.PI_ROOM_EXTENSION_PAYLOAD = extensionPayloadEnv;
 
 			const invocation = (request.getInvocation ?? getPiInvocation)(args);
 			const child = spawnProcess(invocation.command, invocation.args, {
@@ -360,7 +369,10 @@ export function createPiMemberAdapter(options?: {
 /** Build PI_ROOM_* env vars from a RoomBootstrap.
  *  For Paseo adapter — only includes room-specific vars (not process.env
  *  spread, since Paseo's env field is additive/merged by the daemon). */
-export function buildPaseoRoomEnv(bootstrap: RoomBootstrap): Record<string, string> {
+export function buildPaseoRoomEnv(
+	bootstrap: RoomBootstrap,
+	extensionPayload?: SpawnMemberRequest["extensionPayload"],
+): Record<string, string> {
 	const env: Record<string, string> = {};
 	env.PI_ROOM_ID = bootstrap.roomId;
 	env.PI_ROOM_DIR = bootstrap.roomDir;
@@ -369,6 +381,8 @@ export function buildPaseoRoomEnv(bootstrap: RoomBootstrap): Record<string, stri
 	if (bootstrap.token) env.PI_ROOM_BOOTSTRAP_TOKEN = bootstrap.token;
 	if (bootstrap.ownerName) env.PI_ROOM_OWNER_NAME = bootstrap.ownerName;
 	if (bootstrap.ownerSessionId) env.PI_ROOM_OWNER_SESSION_ID = bootstrap.ownerSessionId;
+	const extensionPayloadEnv = serializeExtensionPayloadEnv(extensionPayload);
+	if (extensionPayloadEnv) env.PI_ROOM_EXTENSION_PAYLOAD = extensionPayloadEnv;
 	return env;
 }
 
@@ -485,7 +499,7 @@ export function createPaseoPiMemberAdapter(): RoomSpawnAdapter {
 					: `You are "${request.memberLabel ?? request.memberName}". Wait for messages.`;
 
 				const roomEnv: Record<string, string> | undefined = request.bootstrap
-					? buildPaseoRoomEnv(request.bootstrap)
+					? buildPaseoRoomEnv(request.bootstrap, request.extensionPayload)
 					: undefined;
 
 				const snapshot = await client.createAgent({

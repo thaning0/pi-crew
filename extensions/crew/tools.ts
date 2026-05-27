@@ -985,6 +985,7 @@ export async function queueCrewAdd(
 					? [...typedAgent.tools, ...crewMessageToolNames]
 					: typedAgent.tools,
 				bootstrap,
+				extensionPayload: params.metadata ?? null,
 				parentPaseoAgentId: process.env.PASEO_AGENT_ID?.trim() || undefined,
 				...(initialTaskBoard
 					? { initialTask: { task: params.task!, boardMessageSeq: initialTaskBoard.boardMessageSeq } }
