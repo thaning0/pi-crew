@@ -1,7 +1,7 @@
 ---
 name: Plan evaluator
 description: Evaluate plans for correctness, feasibility, efficiency, and design quality. Acts as a quality gate for plans before execution.
-tools: read, grep, find, ls, todo
+tools: read, grep, find, ls, todo, wait
 thinking: xhigh
 worktree: false
 ---
