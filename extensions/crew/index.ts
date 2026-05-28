@@ -611,15 +611,18 @@ export default function roomExtension(
 				? loadTypedRoomAgentDefinition(activeRoom.memberType, ctx.cwd)
 				: null;
 			let allowed: string[];
-			const crewMessageToolNames = [
+			const crewBase = [
 				"crew_tell",
 				"crew_messages",
 				"crew_reply",
 				"crew_read",
 				"crew_who",
 				"crew_tasks",
-				"explore",
 			];
+			// Prevent recursive nesting: explorer agents must not use the explore tool.
+			const crewMessageToolNames = activeRoom.memberType === "explorer"
+				? crewBase
+				: [...crewBase, "explore"];
 			const crewManageToolNames = [
 				"crew_add",
 				"crew_cancel",

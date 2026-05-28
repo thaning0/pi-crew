@@ -968,7 +968,11 @@ export async function queueCrewAdd(
 	// ── Async spawn: fire-and-forget, tracked for shutdown ──
 	const spawnWork = (async () => {
 		try {
-			const crewMessageToolNames = ["crew_tell", "crew_messages", "crew_reply", "crew_read", "crew_who", "crew_tasks"];
+			// Prevent recursive nesting: explorer agents must not use the explore tool.
+			const crewBase = ["crew_tell", "crew_messages", "crew_reply", "crew_read", "crew_who", "crew_tasks"];
+			const crewMessageToolNames = typedAgent.type === "explorer"
+				? crewBase
+				: [...crewBase, "explore"];
 
 			// ── Worktree isolation: create detached worktree for the agent ──
 			let effectiveCwd = ctx.cwd;
