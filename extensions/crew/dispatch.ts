@@ -140,7 +140,8 @@ export function deliverRoomMessagesBatch(
 	for (const { message } of messages) {
 		const from = formatRoomActor(message.from, formatter);
 		const to = message.to === "room" ? "room" : formatRoomActor(message.to, formatter);
-		lines.push(`  #${message.seq} ${kindEmoji(message.kind)} ${from} → ${to}: ${message.summary}`);
+		const seq = (message.kind === "progress" || message.kind === "cancelled" || message.from === "system") ? "   " : `#${message.seq}`;
+		lines.push(`  ${seq} ${kindEmoji(message.kind)} ${from} → ${to}: ${message.summary}`);
 	}
 
 	pi.sendMessage(

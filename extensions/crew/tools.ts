@@ -2385,7 +2385,8 @@ export async function executeCrewMessages(
 			const target = entry.to === "room"
 			? (entry.mentions?.length ? entry.mentions.map((name) => formatName(name)).join(", ") : "all")
 			: formatRoomTargetName(entry.to, formatName);
-			return `#${entry.seq} ${kind} from: ${formatName(entry.from)} to: ${target} - ${entry.summary}`;
+			const seq = (entry.kind === "progress" || entry.kind === "cancelled" || entry.from === "system") ? "   " : `#${entry.seq}`;
+			return `${seq} ${kind} from: ${formatName(entry.from)} to: ${target} - ${entry.summary}`;
 		}).join("\n");
 	return textResult(text);
 }
