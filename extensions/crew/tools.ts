@@ -2903,5 +2903,5 @@ export async function executeExplore(
 		}
 	}
 
-	return textResult("Results will be pushed to you once the explorer completes.");
+	return textResult("Wait for explorer to work, you will be notified once the explorer completes.");
 }
