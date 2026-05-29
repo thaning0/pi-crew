@@ -2634,7 +2634,7 @@ export async function executeCrewRead(
 	const formatName = await loadRoomNameFormatter(activeRoom.roomDir);
 	return textResult(formatRoomMessageContent(message, replyToSeq, formatName, {
 		offset: params.offset,
-		limit: params.limit ?? 50,
+		limit: params.limit ?? 200,
 		tail: params.tail,
 	}));
 }

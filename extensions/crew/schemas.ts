@@ -274,7 +274,7 @@ export const CrewReadSchema = {
 	properties: {
 		seq: { type: "number", description: "Sequence number of the message to read." },
 		offset: { type: "number", description: "1-indexed line number to start reading from (default: 1)." },
-		limit: { type: "number", description: "Maximum lines of content to return (default: 50). Set to 0 for no limit." },
+		limit: { type: "number", description: "Maximum lines of content to return (default: 200). Set to 0 for no limit." },
 		tail: { type: "boolean", description: "If true, return the last N lines of content instead of the first N (requires limit; ignores offset)." },
 	},
 	required: ["seq"],
