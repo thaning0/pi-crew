@@ -735,8 +735,14 @@ export default function roomExtension(
 		const stopReason = (event.message as Record<string, unknown>)?.stopReason;
 		if (stopReason === "aborted") return;
 
-		// If this turn had tool calls, reset the steered flag (member is working)
-		if (event.toolResults && event.toolResults.length > 0) {
+		// If this turn had tool calls, reset the steered flag (member is working).
+		// Exclude failed crew_reply calls: they don't represent productive work
+		// and resetting the steer flag on them prevents the escalation to
+		// "mark as error", causing an infinite loop when the task is already
+		// closed but the member's state write failed previously.
+		const effectiveToolResults = (event.toolResults as Array<{ toolName?: string; isError?: boolean }> | undefined)
+			?.filter((r) => !(r.toolName === "crew_reply" && r.isError)) ?? [];
+		if (effectiveToolResults.length > 0) {
 			if (member.taskClosureSteeredMessageId) {
 				await updateRoomMemberState(activeRoom.roomDir, activeRoom.memberName, {
 					taskClosureSteeredMessageId: null,
