@@ -856,12 +856,12 @@ export async function activateBootstrapRoom(
 	// Notify owner that this member has joined (skip for transient agents)
 	try {
 		const joinBatchId = joined.spawnBatchId ?? undefined;
-		const status =
-			joined.state === "spawning"
-				? "Bootstrap claimed, awaiting owner finalize"
-				: joined.currentTask
-					? `Ready, executing: ${joined.currentTask}`
-					: "Ready, awaiting task";
+		const spawning = joined.state === "spawning";
+		const status = spawning
+			? "Bootstrap claimed, awaiting owner finalize"
+			: joined.currentTask
+				? `Ready, executing: ${joined.currentTask}`
+				: "Ready, awaiting task";
 		if (!joined.transient) {
 			await appendMessage(bootstrap.roomDir, {
 				from: bootstrap.memberName,
@@ -871,7 +871,7 @@ export async function activateBootstrapRoom(
 				replyTo: null,
 				kind: "info",
 				summary: `${bootstrap.memberName} (${bootstrap.memberType}) ${status}`,
-				silent: joinBatchId ? true : undefined,
+				silent: joinBatchId || spawning ? true : undefined,
 			});
 		}
 		if (joinBatchId) {
