@@ -8,6 +8,7 @@ import {
 	ORCHESTRATOR_UNREMOVABLE_TOOL_NAMES,
 } from "./bootstrap.ts";
 import { loadOrchestratorPromptBody, loadOrchestratorConfig } from "./orchestrator-prompt.ts";
+import { filterAllowedToolNames, filterExplicitToolNames } from "./tool-blacklist.ts";
 import {
 	activateBootstrapRoom,
 	clearActiveRoom,
@@ -440,6 +441,27 @@ export default function roomExtension(
 				beforeOwnerHeartbeatWrite: options.beforeOwnerHeartbeatWrite,
 			});
 
+			// Apply orchestrator tool blacklist early — before the first system
+			// prompt is generated. The before_agent_start handler returns a
+			// custom systemPrompt (orchestrator body injection) which bypasses
+			// Pi's automatic tool-section regeneration. Filtering here ensures
+			// the base prompt already has the correct tools by the time
+			// before_agent_start appends the orchestrator body.
+			const { config: orchestratorConfig } = loadOrchestratorConfig({ cwd: ctx.cwd });
+			if (orchestratorConfig.disabled_tools?.length) {
+				const hasMcpKeyword = orchestratorConfig.disabled_tools.includes("mcp");
+				let allowed = pi.getAllTools()
+					.filter((t) => {
+						if (hasMcpKeyword && t.sourceInfo?.path?.includes("pi-mcp-adapter")) {
+							return false;
+						}
+						return !orchestratorConfig.disabled_tools!.includes(t.name);
+					})
+					.map((t) => t.name);
+				allowed = [...new Set([...allowed, ...ORCHESTRATOR_UNREMOVABLE_TOOL_NAMES])];
+				pi.setActiveTools(allowed);
+			}
+
 			// Register the explore tool's spawn handler on the mutation proxy.
 			// This allows member processes to spawn transient explorer agents
 			// via the proxy (Unix socket), avoiding process-local event bus limits.
@@ -593,6 +615,7 @@ export default function roomExtension(
 			const agentDef = activeRoom.memberType
 				? loadTypedRoomAgentDefinition(activeRoom.memberType, ctx.cwd)
 				: null;
+			const allTools = pi.getAllTools();
 			let allowed: string[];
 			// Prevent recursive nesting: explorer agents must not use the explore tool.
 			const crewMessageToolNames = getCrewMessageToolNames(activeRoom.memberType);
@@ -600,14 +623,14 @@ export default function roomExtension(
 			if (agentDef?.tools && agentDef.tools.length > 0) {
 				allowed = agentDef.tools;
 			} else {
-				allowed = pi
-					.getAllTools()
+				allowed = allTools
 					.map((t) => t.name)
 					.filter((name) => !CREW_MANAGE_TOOL_NAMES.includes(name));
 			}
-			// Apply disabled_tools blacklist (if any). Does not affect crew message tools.
+			// Apply disabled_tools blacklist (if any), including MCP server identifiers.
+			// Does not affect crew message tools.
 			if (agentDef?.disabled_tools && agentDef.disabled_tools.length > 0) {
-				allowed = allowed.filter((t) => !agentDef.disabled_tools!.includes(t));
+				allowed = filterExplicitToolNames(allowed, allTools, agentDef.disabled_tools);
 			}
 			// Always include crew messaging tools.
 			allowed = [...new Set([...allowed, ...crewMessageToolNames])];
@@ -630,10 +653,10 @@ export default function roomExtension(
 			// Apply orchestrator tool blacklist (disabled_tools frontmatter).
 			// Unremovable tools (crew_*, explore, wait) are always kept.
 			if (orchestratorConfig.disabled_tools?.length) {
-				let allowed = pi
-					.getAllTools()
-					.map((t) => t.name)
-					.filter((t) => !orchestratorConfig.disabled_tools!.includes(t));
+				let allowed = filterAllowedToolNames(
+					pi.getAllTools(),
+					orchestratorConfig.disabled_tools,
+				);
 				allowed = [...new Set([...allowed, ...ORCHESTRATOR_UNREMOVABLE_TOOL_NAMES])];
 				pi.setActiveTools(allowed);
 			}
