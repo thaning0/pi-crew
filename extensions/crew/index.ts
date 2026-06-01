@@ -5,8 +5,9 @@ import {
 	parseRoomBootstrapFromEnv,
 	getCrewMessageToolNames,
 	CREW_MANAGE_TOOL_NAMES,
+	ORCHESTRATOR_UNREMOVABLE_TOOL_NAMES,
 } from "./bootstrap.ts";
-import { loadOrchestratorPromptBody } from "./orchestrator-prompt.ts";
+import { loadOrchestratorPromptBody, loadOrchestratorConfig } from "./orchestrator-prompt.ts";
 import {
 	activateBootstrapRoom,
 	clearActiveRoom,
@@ -623,7 +624,20 @@ export default function roomExtension(
 		// Orchestrator-only directives (delegation rules, memory tool usage, etc.)
 		// live in AGENTS-orchestrator.md and are injected only for owner sessions.
 		if (activeRoom?.role === "owner") {
-			const orchestratorBody = loadOrchestratorPromptBody({ cwd: ctx.cwd });
+			const { body: orchestratorBody, config: orchestratorConfig } =
+				loadOrchestratorConfig({ cwd: ctx.cwd });
+
+			// Apply orchestrator tool blacklist (disabled_tools frontmatter).
+			// Unremovable tools (crew_*, explore, wait) are always kept.
+			if (orchestratorConfig.disabled_tools?.length) {
+				let allowed = pi
+					.getAllTools()
+					.map((t) => t.name)
+					.filter((t) => !orchestratorConfig.disabled_tools!.includes(t));
+				allowed = [...new Set([...allowed, ...ORCHESTRATOR_UNREMOVABLE_TOOL_NAMES])];
+				pi.setActiveTools(allowed);
+			}
+
 			if (orchestratorBody) {
 				// Build available subagents section from agent definitions so the
 				// orchestrator always knows what types are available without

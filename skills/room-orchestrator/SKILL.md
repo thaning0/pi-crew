@@ -179,3 +179,26 @@ When user want to add a custom agent that is not in the predefined roles, provid
   ---
   You are ...
   ```
+
+## Orchestrator Tool Control
+
+The orchestrator (lead agent) can also restrict its own tools via `AGENTS-orchestrator.md` frontmatter:
+
+- Use `disabled_tools` (blocklist) to prevent the orchestrator from using specific tools directly.
+- **Unremovable orchestrator tools**: `crew_add`, `crew_cancel`, `crew_remove`, `crew_roles`, `crew_merge`, `crew_batch`, `crew_tell`, `crew_messages`, `crew_reply`, `crew_read`, `crew_who`, `crew_tasks`, `explore`, `wait` — these are always available and cannot be disabled.
+- No `tools` allowlist is supported for the orchestrator (too restrictive).
+- When no `disabled_tools` is configured, the orchestrator has all available tools (backward compatible).
+
+File format (`AGENTS-orchestrator.md`):
+  ```markdown
+  ---
+  disabled_tools: bash, edit, write
+  ---
+  You are agent orchestrator. Your primary role is...
+  ```
+
+Search order for `AGENTS-orchestrator.md`:
+  1. `<cwd>/AGENTS-orchestrator.md` (repo root)
+  2. `<cwd>/.pi/AGENTS-orchestrator.md` (repo .pi dir)
+  3. `~/.pi/AGENTS-orchestrator.md` (global)
+  4. Built-in (`prompts/AGENTS-orchestrator.md`)

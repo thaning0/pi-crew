@@ -54,6 +54,14 @@ export function getCrewMessageToolNames(agentType: string): string[] {
 	return [...CREW_MESSAGE_TOOL_NAMES, "explore"];
 }
 
+/** Tools that the orchestrator must always have available (unremovable via disabled_tools). */
+export const ORCHESTRATOR_UNREMOVABLE_TOOL_NAMES = [
+	...CREW_MANAGE_TOOL_NAMES,
+	...CREW_MESSAGE_TOOL_NAMES,
+	"explore",
+	"wait",
+] as const;
+
 /** Agent types that should not appear as directly-spawnable subagents. */
 const HIDDEN_AGENT_TYPES = new Set(["explorer"]);
 
