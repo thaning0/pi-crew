@@ -36,10 +36,7 @@ function resolveHomeDir(override?: string): string {
 
 function getSearchPaths(options: OrchestratorPromptLoadOptions): string[] {
 	const repoPaths = options.cwd
-		? [
-			path.join(options.cwd, ORCHESTRATOR_PROMPT_FILE),
-			path.join(options.cwd, ".pi", ORCHESTRATOR_PROMPT_FILE),
-		]
+		? [path.join(options.cwd, ORCHESTRATOR_PROMPT_FILE)]
 		: [];
 	const homeDir = resolveHomeDir(options.homeDir);
 	const globalPath = path.join(homeDir, ".pi", ORCHESTRATOR_PROMPT_FILE);
@@ -123,6 +120,10 @@ export function loadOrchestratorConfig(
 		try {
 			const raw = fs.readFileSync(promptPath, "utf8");
 			const { frontmatter, body } = parseOrchestratorFrontmatter(raw);
+			if (!body.trim() && !normalizeDisabledTools(frontmatter.disabled_tools)) {
+				// Empty file with no config — treat as not found, try next path
+				continue;
+			}
 			const result: OrchestratorPromptResult = {
 				body,
 				config: {

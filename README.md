@@ -157,9 +157,8 @@ To override only the owner/orchestrator instructions injected from `prompts/AGEN
 | Priority | Path | Description |
 |----------|------|-------------|
 | 1 (highest) | `{cwd}/AGENTS-orchestrator.md` | Project root |
-| 2 | `{cwd}/.pi/AGENTS-orchestrator.md` | Project-level `.pi` directory |
-| 3 | `~/.pi/AGENTS-orchestrator.md` | User global config |
-| 4 (default) | `{extension}/prompts/AGENTS-orchestrator.md` | Built-in default |
+| 2 | `~/.pi/AGENTS-orchestrator.md` | User global config |
+| 3 (default) | `{extension}/prompts/AGENTS-orchestrator.md` | Built-in default |
 
 #### Override semantics: full replacement (NOT a merge)
 
@@ -170,6 +169,15 @@ bash, edit, write, web_search, web_fetch, mcp, bash_monitor, bash_write, bash_re
 ```
 
 If you create a project-level override, you **must include these same defaults** in your file's frontmatter — otherwise the built-in blocklist is lost entirely. The recommended approach: copy the built-in file's frontmatter to your override, then append your own entries to `disabled_tools`.
+
+#### How filtering is applied
+
+Tool filtering runs in `session_start` for owner sessions, **before** the first turn begins. This ensures `_baseSystemPrompt` is already filtered by the time Pi's `emitBeforeAgentStart` captures it — preventing stale unfiltered prompts from leaking into the orchestrator's system prompt. Filtering also runs in `before_agent_start` for defense in depth.
+
+Certain tools are **unremovable** and always available to the orchestrator:
+- All crew messaging tools (`crew_tell`, `crew_reply`, `crew_messages`, `crew_read`, `crew_who`, `crew_tasks`)
+- `explore` — for dispatching transient explorer agents
+- `wait` — for async polling
 
 #### Relationship with sub-agent disabled_tools
 

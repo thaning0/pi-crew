@@ -181,6 +181,62 @@ describe("orchestrator prompt overrides", () => {
 		});
 	});
 
+	it("skips empty repo file and falls back to global prompt", async () => {
+		await withTempDir(async (tempDir) => {
+			const repoDir = path.join(tempDir, "repo");
+			const homeDir = path.join(tempDir, "home");
+			const packageDir = path.join(tempDir, "package");
+
+			await fs.mkdir(repoDir, { recursive: true });
+			// Empty file — should be skipped
+			await writePrompt(repoDir, "AGENTS-orchestrator.md", "");
+			await writePrompt(homeDir, ".pi/AGENTS-orchestrator.md", "global orchestrator prompt");
+			await writePrompt(packageDir, "prompts/AGENTS-orchestrator.md", "built-in orchestrator prompt");
+
+			vi.stubEnv("HOME", homeDir);
+			vi.stubEnv("PI_CODING_AGENT_DIR", packageDir);
+
+			const { default: roomExtension } = await import("./index.ts");
+			const { lifecycleHandlers } = createHarness(roomExtension);
+			setOwnerRoom("owner-session");
+
+			const prompt = await invokeBeforeAgentStart(lifecycleHandlers, {
+				cwd: repoDir,
+				sessionId: "owner-session",
+			});
+
+			expect(prompt).toContain("global orchestrator prompt");
+			expect(prompt).not.toContain("built-in orchestrator prompt");
+		});
+	});
+
+	it("skips whitespace-only repo file and falls back to built-in", async () => {
+		await withTempDir(async (tempDir) => {
+			const repoDir = path.join(tempDir, "repo");
+			const homeDir = path.join(tempDir, "home");
+			const packageDir = path.join(tempDir, "package");
+
+			await fs.mkdir(repoDir, { recursive: true });
+			// Whitespace-only file — should be skipped
+			await writePrompt(repoDir, "AGENTS-orchestrator.md", "  \n  \n");
+			await writePrompt(packageDir, "prompts/AGENTS-orchestrator.md", "built-in orchestrator prompt");
+
+			vi.stubEnv("HOME", homeDir);
+			vi.stubEnv("PI_CODING_AGENT_DIR", packageDir);
+
+			const { default: roomExtension } = await import("./index.ts");
+			const { lifecycleHandlers } = createHarness(roomExtension);
+			setOwnerRoom("owner-session");
+
+			const prompt = await invokeBeforeAgentStart(lifecycleHandlers, {
+				cwd: repoDir,
+				sessionId: "owner-session",
+			});
+
+			expect(prompt).toContain("built-in orchestrator prompt");
+		});
+	});
+
 	it("filters concrete MCP tools when disabled_tools lists MCP servers", async () => {
 		await withTempDir(async (tempDir) => {
 			const repoDir = path.join(tempDir, "repo");

@@ -155,9 +155,8 @@ worktree: false
 | 优先级 | 路径 | 说明 |
 |--------|------|------|
 | 1 (最高) | `{cwd}/AGENTS-orchestrator.md` | 项目根目录 |
-| 2 | `{cwd}/.pi/AGENTS-orchestrator.md` | 项目级 `.pi` 目录 |
-| 3 | `~/.pi/AGENTS-orchestrator.md` | 用户全局配置 |
-| 4 (默认) | `{扩展包}/prompts/AGENTS-orchestrator.md` | 内置默认值 |
+| 2 | `~/.pi/AGENTS-orchestrator.md` | 用户全局配置 |
+| 3 (默认) | `{扩展包}/prompts/AGENTS-orchestrator.md` | 内置默认值 |
 
 #### 覆盖语义：完全替换（非合并）
 
@@ -168,6 +167,15 @@ bash, edit, write, web_search, web_fetch, mcp, bash_monitor, bash_write, bash_re
 ```
 
 如果你创建项目级覆盖文件，**必须在 frontmatter 中包含这些相同的默认项**，否则内置的黑名单会完全丢失。推荐做法：将内置文件的 frontmatter 复制到你的覆盖文件中，然后在 `disabled_tools` 中追加你自己的条目。
+
+#### 过滤执行方式
+
+工具过滤在 `session_start` 中为 owner session 执行，**在首轮对话开始之前**。这确保 `_baseSystemPrompt` 在 Pi 的 `emitBeforeAgentStart` 捕获时已完成过滤——防止 stale unfiltered prompt 泄漏到 orchestrator 的系统提示词中。过滤也在 `before_agent_start` 中重复执行以提供纵深防御。
+
+以下工具为**不可移除**的，orchestrator 始终可用：
+- 所有 crew 通信工具（`crew_tell`、`crew_reply`、`crew_messages`、`crew_read`、`crew_who`、`crew_tasks`）
+- `explore` — 用于派发临时 explorer 智能体
+- `wait` — 用于异步等待
 
 #### 与子智能体 disabled_tools 的关系
 

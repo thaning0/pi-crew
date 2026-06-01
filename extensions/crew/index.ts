@@ -429,6 +429,26 @@ export default function roomExtension(
 				roomId: activeRoom.roomId,
 			});
 		}
+		// Apply orchestrator tool blacklist early for owner sessions — BEFORE
+		// the first system prompt is generated. This must run unconditionally
+		// for owner sessions (outside the room check) because the owner room
+		// may not exist yet in session_start (activateBootstrapRoom only
+		// creates rooms for bootstrap members). If filtering only runs inside
+		// the room check, _baseSystemPrompt remains unfiltered and Pi's
+		// emitBeforeAgentStart captures it as a stale currentSystemPrompt
+		// that ctx.getSystemPrompt() returns later in before_agent_start.
+		if (!bootstrap) {
+			const { config: orchestratorConfig } = loadOrchestratorConfig({ cwd: ctx.cwd });
+			if (orchestratorConfig.disabled_tools?.length) {
+				let allowed = filterAllowedToolNames(
+					pi.getAllTools(),
+					orchestratorConfig.disabled_tools,
+				);
+				allowed = [...new Set([...allowed, ...ORCHESTRATOR_UNREMOVABLE_TOOL_NAMES])];
+				pi.setActiveTools(allowed);
+			}
+		}
+
 		if (activeRoom?.role === "owner") {
 			await ensureOwnerInfrastructure({
 				pi,
@@ -440,27 +460,6 @@ export default function roomExtension(
 				startOwnerHeartbeat,
 				beforeOwnerHeartbeatWrite: options.beforeOwnerHeartbeatWrite,
 			});
-
-			// Apply orchestrator tool blacklist early — before the first system
-			// prompt is generated. The before_agent_start handler returns a
-			// custom systemPrompt (orchestrator body injection) which bypasses
-			// Pi's automatic tool-section regeneration. Filtering here ensures
-			// the base prompt already has the correct tools by the time
-			// before_agent_start appends the orchestrator body.
-			const { config: orchestratorConfig } = loadOrchestratorConfig({ cwd: ctx.cwd });
-			if (orchestratorConfig.disabled_tools?.length) {
-				const hasMcpKeyword = orchestratorConfig.disabled_tools.includes("mcp");
-				let allowed = pi.getAllTools()
-					.filter((t) => {
-						if (hasMcpKeyword && t.sourceInfo?.path?.includes("pi-mcp-adapter")) {
-							return false;
-						}
-						return !orchestratorConfig.disabled_tools!.includes(t.name);
-					})
-					.map((t) => t.name);
-				allowed = [...new Set([...allowed, ...ORCHESTRATOR_UNREMOVABLE_TOOL_NAMES])];
-				pi.setActiveTools(allowed);
-			}
 
 			// Register the explore tool's spawn handler on the mutation proxy.
 			// This allows member processes to spawn transient explorer agents
