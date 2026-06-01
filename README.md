@@ -152,13 +152,40 @@ Place in `.pi/crew_agents/` (project-level) or `~/.pi/crew_agents/` (global). Au
 
 ### Custom orchestrator prompt
 
-To override only the owner/orchestrator instructions injected from `prompts/AGENTS-orchestrator.md`, create one of:
+To override only the owner/orchestrator instructions injected from `prompts/AGENTS-orchestrator.md`, create an override file. The system searches in order — the **first match wins**, and subsequent paths are **not read or merged**:
 
-- `AGENTS-orchestrator.md` in the repo root
-- `.pi/AGENTS-orchestrator.md` in the repo root
-- `~/.pi/AGENTS-orchestrator.md`
+| Priority | Path | Description |
+|----------|------|-------------|
+| 1 (highest) | `{cwd}/AGENTS-orchestrator.md` | Project root |
+| 2 | `{cwd}/.pi/AGENTS-orchestrator.md` | Project-level `.pi` directory |
+| 3 | `~/.pi/AGENTS-orchestrator.md` | User global config |
+| 4 (default) | `{extension}/prompts/AGENTS-orchestrator.md` | Built-in default |
 
-Priority: repo root > repo `.pi` alias > global > built-in.
+#### Override semantics: full replacement (NOT a merge)
+
+An override file **completely replaces** the built-in content — it is **not merged**. This is especially important for the `disabled_tools` in the frontmatter. The built-in file includes these default disabled tools:
+
+```
+bash, edit, write, web_search, web_fetch, mcp, bash_monitor, bash_write, bash_read, bash_list, bash_stop
+```
+
+If you create a project-level override, you **must include these same defaults** in your file's frontmatter — otherwise the built-in blocklist is lost entirely. The recommended approach: copy the built-in file's frontmatter to your override, then append your own entries to `disabled_tools`.
+
+#### Relationship with sub-agent disabled_tools
+
+The `disabled_tools` in `AGENTS-orchestrator.md` affects **only the orchestrator (lead agent) itself**. It does NOT apply to sub-agents. Each sub-agent (worker, reviewer, etc.) has its own `disabled_tools` configured independently in its agent definition file (`.pi/crew_agents/*.md`). The two are completely separate.
+
+#### Example override
+
+```markdown
+---
+disabled_tools: bash, edit, write, web_search, web_fetch, mcp, bash_monitor, bash_write, bash_read, bash_list, bash_stop, web_fetch
+---
+
+Your custom orchestrator instructions here...
+```
+
+With these tools disabled, the orchestrator cannot directly manipulate files, run commands, or search the web. It must delegate all work to sub-agents — ensuring a clean separation of orchestration and execution.
 
 ---
 

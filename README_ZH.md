@@ -150,13 +150,40 @@ worktree: false
 
 ### 自定义 orchestrator 提示词
 
-如果你只想覆盖 owner/orchestrator 注入的 `prompts/AGENTS-orchestrator.md` 指令，可创建以下任一文件：
+如果你只想覆盖 owner/orchestrator 注入的 `prompts/AGENTS-orchestrator.md` 指令，可创建覆盖文件。系统按顺序查找，**首次匹配即生效**，后续路径**不会被读取或合并**：
 
-- 仓库根目录 `AGENTS-orchestrator.md`
-- 仓库根目录 `.pi/AGENTS-orchestrator.md`
-- `~/.pi/AGENTS-orchestrator.md`
+| 优先级 | 路径 | 说明 |
+|--------|------|------|
+| 1 (最高) | `{cwd}/AGENTS-orchestrator.md` | 项目根目录 |
+| 2 | `{cwd}/.pi/AGENTS-orchestrator.md` | 项目级 `.pi` 目录 |
+| 3 | `~/.pi/AGENTS-orchestrator.md` | 用户全局配置 |
+| 4 (默认) | `{扩展包}/prompts/AGENTS-orchestrator.md` | 内置默认值 |
 
-优先级：仓库根目录 > 仓库 `.pi` 兼容别名 > 全局 > 内置。
+#### 覆盖语义：完全替换（非合并）
+
+覆盖文件会**完全替换**内置内容，并非合并。这对于 frontmatter 中的 `disabled_tools` 尤为重要。内置文件包含以下默认禁用工具：
+
+```
+bash, edit, write, web_search, web_fetch, mcp, bash_monitor, bash_write, bash_read, bash_list, bash_stop
+```
+
+如果你创建项目级覆盖文件，**必须在 frontmatter 中包含这些相同的默认项**，否则内置的黑名单会完全丢失。推荐做法：将内置文件的 frontmatter 复制到你的覆盖文件中，然后在 `disabled_tools` 中追加你自己的条目。
+
+#### 与子智能体 disabled_tools 的关系
+
+`AGENTS-orchestrator.md` 中的 `disabled_tools` **仅影响 orchestrator（lead 智能体）自身**。它不会应用于子智能体。每个子智能体（worker、reviewer 等）在其各自的 agent 定义文件（`.pi/crew_agents/*.md`）中独立配置 `disabled_tools`。二者完全独立，互不影响。
+
+#### 覆盖示例
+
+```markdown
+---
+disabled_tools: bash, edit, write, web_search, web_fetch, mcp, bash_monitor, bash_write, bash_read, bash_list, bash_stop, web_fetch
+---
+
+在这里编写你的自定义 orchestrator 指令...
+```
+
+这些工具被禁用后，orchestrator 无法直接操作文件、运行命令或搜索网络。它必须将所有工作委派给子智能体——确保编排与执行职责清晰分离。
 
 ---
 
