@@ -147,6 +147,16 @@ Place in `.pi/crew_agents/` (project-level) or `~/.pi/crew_agents/` (global). Au
 
 > 🎯 **Design**: project > global > built-in. Override any built-in agent without touching the extension.
 
+### Custom orchestrator prompt
+
+To override only the owner/orchestrator instructions injected from `prompts/AGENTS-orchestrator.md`, create one of:
+
+- `AGENTS-orchestrator.md` in the repo root
+- `.pi/AGENTS-orchestrator.md` in the repo root
+- `~/.pi/AGENTS-orchestrator.md`
+
+Priority: repo root > repo `.pi` alias > global > built-in.
+
 ---
 
 ## Bundled Plugins

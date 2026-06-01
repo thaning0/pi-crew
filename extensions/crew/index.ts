@@ -1,12 +1,10 @@
-import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import {
 	listRoomAgentTypes,
 	loadTypedRoomAgentDefinition,
 	parseRoomBootstrapFromEnv,
 } from "./bootstrap.ts";
+import { loadOrchestratorPromptBody } from "./orchestrator-prompt.ts";
 import {
 	activateBootstrapRoom,
 	clearActiveRoom,
@@ -308,26 +306,6 @@ async function emitCrewControlOutcome(
 	}
 }
 
-
-/** Orchestrator-specific instructions, loaded once at module init. */
-let orchestratorPromptBody: string | null = null;
-function getOrchestratorPromptBody(): string {
-	if (orchestratorPromptBody !== null) return orchestratorPromptBody;
-	try {
-		// Resolve relative to the crew package root: <root>/prompts/AGENTS-orchestrator.md
-		const packageRoot =
-			process.env.PI_CODING_AGENT_DIR?.trim() ||
-			dirname(dirname(dirname(fileURLToPath(import.meta.url))));
-		orchestratorPromptBody = readFileSync(
-			join(packageRoot, "prompts", "AGENTS-orchestrator.md"),
-			"utf8",
-		).trim();
-	} catch {
-		orchestratorPromptBody =
-			"IMPORTANT: First, warn your user that AGENTS-orchestrator.md was not found. Your orchestrator-specific instructions are missing. You may still operate but your behavior may be degraded.";
-	}
-	return orchestratorPromptBody;
-}
 
 export interface RoomExtensionOptions {
 	runtimeRoot?: string;
@@ -652,7 +630,7 @@ export default function roomExtension(
 		// Orchestrator-only directives (delegation rules, memory tool usage, etc.)
 		// live in AGENTS-orchestrator.md and are injected only for owner sessions.
 		if (activeRoom?.role === "owner") {
-			const orchestratorBody = getOrchestratorPromptBody();
+			const orchestratorBody = loadOrchestratorPromptBody({ cwd: ctx.cwd });
 			if (orchestratorBody) {
 				// Build available subagents section from agent definitions so the
 				// orchestrator always knows what types are available without

@@ -145,6 +145,16 @@ worktree: false
 
 > 🎯 **设计理念**：项目级 > 全局级 > 内置。你可以覆盖内置智能体的行为，而不需要修改扩展本身。
 
+### 自定义 orchestrator 提示词
+
+如果你只想覆盖 owner/orchestrator 注入的 `prompts/AGENTS-orchestrator.md` 指令，可创建以下任一文件：
+
+- 仓库根目录 `AGENTS-orchestrator.md`
+- 仓库根目录 `.pi/AGENTS-orchestrator.md`
+- `~/.pi/AGENTS-orchestrator.md`
+
+优先级：仓库根目录 > 仓库 `.pi` 兼容别名 > 全局 > 内置。
+
 ---
 
 ## 附带插件
