@@ -27,6 +27,13 @@ declare module "@mariozechner/pi-coding-agent" {
 	export interface ToolInfo {
 		name: string;
 		description: string;
+		sourceInfo?: {
+			path: string;
+			source: string;
+			scope: "user" | "project" | "temporary";
+			origin: "package" | "top-level";
+			baseDir?: string;
+		};
 	}
 
 	export interface SendMessagePayload {

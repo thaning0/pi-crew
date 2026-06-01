@@ -6,6 +6,7 @@ import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import { CrewAddSchema, CrewStopSchema, CrewRemoveSchema, CrewRolesSchema, CrewMergeSchema, CrewTellSchema, CrewMessagesSchema, CrewReplySchema, CrewReadSchema, CrewWhoSchema, CrewTasksSchema } from "./schemas.ts";
 import { createWorktree, persistWorktreeSnapshot, pruneWorktrees, git } from "./worktree.ts";
 import { archiveMemberWorktreeCleanup } from "./worktree-cleanup.ts";
+import { filterExplicitToolNames } from "./tool-blacklist.ts";
 
 /**
  * Per-room spawn serialization to prevent concurrent paseo daemon createAgent RPCs.
@@ -826,14 +827,16 @@ export async function queueCrewAdd(
 		? [...typedAgent.tools]
 		: undefined;
 	if (typedAgent.disabled_tools?.length && options.pi) {
+		const allTools = options.pi.getAllTools();
 		if (!effectiveSpawnTools) {
-			effectiveSpawnTools = options.pi
-				.getAllTools()
+			effectiveSpawnTools = allTools
 				.map((t) => t.name)
 				.filter((n) => !CREW_MANAGE_TOOL_NAMES.includes(n));
 		}
-		effectiveSpawnTools = effectiveSpawnTools.filter(
-			(t) => !typedAgent.disabled_tools!.includes(t),
+		effectiveSpawnTools = filterExplicitToolNames(
+			effectiveSpawnTools,
+			allTools,
+			typedAgent.disabled_tools,
 		);
 	}
 

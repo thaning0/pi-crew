@@ -21,26 +21,27 @@ async function writePrompt(rootDir: string, relativePath: string, content: strin
 	await fs.writeFile(filePath, content, "utf8");
 }
 
-function createHarness(roomExtension: typeof import("./index.ts").default) {
+function createHarness(
+	roomExtension: typeof import("./index.ts").default,
+	allTools: any[] = [],
+) {
 	const lifecycleHandlers = new Map<string, RegisteredHandler>();
-	roomExtension(
-		{
-			events: {
-				on: vi.fn(),
-				emit: vi.fn(async () => undefined),
-			},
-			on: vi.fn((name: string, handler: RegisteredHandler) => {
-				lifecycleHandlers.set(name, handler);
-			}),
-			registerTool: vi.fn(),
-			sendMessage: vi.fn(),
-			setActiveTools: vi.fn(),
-			getAllTools: vi.fn(() => []),
-			getThinkingLevel: vi.fn(),
-		} as any,
-		{},
-	);
-	return lifecycleHandlers;
+	const pi = {
+		events: {
+			on: vi.fn(),
+			emit: vi.fn(async () => undefined),
+		},
+		on: vi.fn((name: string, handler: RegisteredHandler) => {
+			lifecycleHandlers.set(name, handler);
+		}),
+		registerTool: vi.fn(),
+		sendMessage: vi.fn(),
+		setActiveTools: vi.fn(),
+		getAllTools: vi.fn(() => allTools),
+		getThinkingLevel: vi.fn(),
+	} as any;
+	roomExtension(pi, {});
+	return { lifecycleHandlers, pi };
 }
 
 function setOwnerRoom(sessionId: string): void {
@@ -102,7 +103,7 @@ describe("orchestrator prompt overrides", () => {
 			vi.stubEnv("PI_CODING_AGENT_DIR", packageDir);
 
 			const { default: roomExtension } = await import("./index.ts");
-			const lifecycleHandlers = createHarness(roomExtension);
+			const { lifecycleHandlers } = createHarness(roomExtension);
 			setOwnerRoom("owner-session");
 
 			const prompt = await invokeBeforeAgentStart(lifecycleHandlers, {
@@ -133,7 +134,7 @@ describe("orchestrator prompt overrides", () => {
 			vi.stubEnv("PI_CODING_AGENT_DIR", packageDir);
 
 			const { default: roomExtension } = await import("./index.ts");
-			const lifecycleHandlers = createHarness(roomExtension);
+			const { lifecycleHandlers } = createHarness(roomExtension);
 
 			setOwnerRoom("owner-session-1");
 			const repoPrompt = await invokeBeforeAgentStart(lifecycleHandlers, {
@@ -168,7 +169,7 @@ describe("orchestrator prompt overrides", () => {
 			vi.stubEnv("PI_CODING_AGENT_DIR", packageDir);
 
 			const { default: roomExtension } = await import("./index.ts");
-			const lifecycleHandlers = createHarness(roomExtension);
+			const { lifecycleHandlers } = createHarness(roomExtension);
 			setOwnerRoom("owner-session");
 
 			const prompt = await invokeBeforeAgentStart(lifecycleHandlers, {
@@ -177,6 +178,73 @@ describe("orchestrator prompt overrides", () => {
 			});
 
 			expect(prompt).toContain("built-in orchestrator prompt");
+		});
+	});
+
+	it("filters concrete MCP tools when disabled_tools lists MCP servers", async () => {
+		await withTempDir(async (tempDir) => {
+			const repoDir = path.join(tempDir, "repo");
+			const packageDir = path.join(tempDir, "package");
+
+			await fs.mkdir(repoDir, { recursive: true });
+			await writePrompt(
+				repoDir,
+				"AGENTS-orchestrator.md",
+				`---
+disabled_tools:
+  - deepwiki
+  - github
+---
+repo orchestrator prompt`,
+			);
+			await writePrompt(packageDir, "prompts/AGENTS-orchestrator.md", "built-in orchestrator prompt");
+			vi.stubEnv("PI_CODING_AGENT_DIR", packageDir);
+
+			const { default: roomExtension } = await import("./index.ts");
+			const { lifecycleHandlers, pi } = createHarness(roomExtension, [
+				{
+					name: "read_wiki_structure",
+					description: "deepwiki tool",
+					sourceInfo: {
+						path: "mcp/deepwiki/read_wiki_structure",
+						source: "pi-mcp-adapter:deepwiki",
+						scope: "project",
+						origin: "top-level",
+					},
+				},
+				{
+					name: "search_repositories",
+					description: "github tool",
+					sourceInfo: {
+						path: "mcp/github-mcp-server/search_repositories",
+						source: "pi-mcp-adapter:github-mcp-server",
+						scope: "project",
+						origin: "top-level",
+					},
+				},
+				{
+					name: "view",
+					description: "builtin tool",
+					sourceInfo: {
+						path: "extensions/view.ts",
+						source: "builtin-tools",
+						scope: "project",
+						origin: "top-level",
+					},
+				},
+			]);
+			setOwnerRoom("owner-session");
+
+			await invokeBeforeAgentStart(lifecycleHandlers, {
+				cwd: repoDir,
+				sessionId: "owner-session",
+			});
+
+			expect(pi.setActiveTools).toHaveBeenCalled();
+			const allowed = pi.setActiveTools.mock.calls.at(-1)?.[0];
+			expect(allowed).toContain("view");
+			expect(allowed).not.toContain("read_wiki_structure");
+			expect(allowed).not.toContain("search_repositories");
 		});
 	});
 });
