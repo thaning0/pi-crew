@@ -128,13 +128,16 @@ pi-crew chains tasks automatically — each downstream task waits for its upstre
 
 ### Custom Agents
 
-One `.md` file, one YAML block, and you have a custom agent:
+One `.md` file, one YAML block, and you have a custom agent.
+
+Use `tools` (allowlist) to restrict which tools the agent can use, or `disabled_tools` (blocklist) to exclude specific tools from the default set. When both are present, `disabled_tools` filters from `tools`. Crew messaging tools (`crew_tell`, `crew_reply`, etc.) are always available regardless.
 
 ```markdown
 ---
 name: db-expert
 description: Database schema design & SQL optimization expert
-tools: read, grep, find, ls, todo, wait, bash, web_search
+tools: read, grep, find, ls, todo, wait, bash, web_search  # allowlist (optional)
+disabled_tools: edit, write                                  # blocklist (optional)
 thinking: high
 worktree: false
 ---

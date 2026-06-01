@@ -127,6 +127,8 @@ import {
 	buildRoomMemberSystemPrompt,
 	listRoomAgentTypes,
 	loadTypedRoomAgentDefinition,
+	getCrewMessageToolNames,
+	CREW_MANAGE_TOOL_NAMES,
 } from "./bootstrap.ts";
 
 import {
@@ -445,6 +447,12 @@ type QueueCrewAddOptions = {
 	ctx: RoomExecCtx;
 	adapters: { pi: RoomSpawnAdapter; paseo: RoomSpawnAdapter };
 	batchContext?: QueueBatchContext;
+	/** ExtensionAPI for computing effective tools list at spawn time.
+	 *  When set and the agent definition includes disabled_tools, the effective
+	 *  tool list is pre-computed and passed to the spawn adapter for hard filtering
+	 *  (Pi --tools flag). When unset, disabled_tools filtering happens only at
+	 *  before_agent_start via setActiveTools(). */
+	pi?: ExtensionAPI;
 };
 
 type CrewAddFailurePhase = "request" | "spawn";
@@ -801,12 +809,34 @@ export async function queueCrewAdd(
 	const holdExpiresAt = computeSpawnHoldExpiresAt(activation, effectiveHoldTimeoutMs);
 
 	const typedAgent = loadTypedRoomAgentDefinition(params.type, options.ctx.cwd);
+
 	if (!typedAgent) {
 		throw markCrewAddPhase(
 			new ValidationError(`Agent type ${params.type} not found.`),
 			"request",
 		);
 	}
+
+	// Compute effective tools for spawn-time filtering.
+	// If disabled_tools is set, filter the base allowed set before
+	// passing to the spawn adapter (Pi --tools flag). This prevents
+	// disabled tools from being registered in the sub-agent process.
+	// When pi is unavailable, fall back to before_agent_start filtering.
+	let effectiveSpawnTools = typedAgent.tools
+		? [...typedAgent.tools]
+		: undefined;
+	if (typedAgent.disabled_tools?.length && options.pi) {
+		if (!effectiveSpawnTools) {
+			effectiveSpawnTools = options.pi
+				.getAllTools()
+				.map((t) => t.name)
+				.filter((n) => !CREW_MANAGE_TOOL_NAMES.includes(n));
+		}
+		effectiveSpawnTools = effectiveSpawnTools.filter(
+			(t) => !typedAgent.disabled_tools!.includes(t),
+		);
+	}
+
 
 	const effectiveModel = params.model?.trim() || typedAgent.model || ctx.currentModel;
 	const effectiveThinkingLevel = typedAgent.thinking ?? ctx.currentThinkingLevel;
@@ -968,11 +998,7 @@ export async function queueCrewAdd(
 	// ── Async spawn: fire-and-forget, tracked for shutdown ──
 	const spawnWork = (async () => {
 		try {
-			// Prevent recursive nesting: explorer agents must not use the explore tool.
-			const crewBase = ["crew_tell", "crew_messages", "crew_reply", "crew_read", "crew_who", "crew_tasks"];
-			const crewMessageToolNames = typedAgent.type === "explorer"
-				? crewBase
-				: [...crewBase, "explore"];
+			const crewMessageToolNames = getCrewMessageToolNames(typedAgent.type);
 
 			// ── Worktree isolation: create detached worktree for the agent ──
 			let effectiveCwd = ctx.cwd;
@@ -1002,9 +1028,9 @@ export async function queueCrewAdd(
 				memberLabel,
 				model: effectiveModel,
 				thinkingLevel: effectiveThinkingLevel,
-				tools: typedAgent.tools
-					? [...typedAgent.tools, ...crewMessageToolNames]
-					: typedAgent.tools,
+				tools: effectiveSpawnTools
+					? [...new Set([...effectiveSpawnTools, ...crewMessageToolNames])]
+					: effectiveSpawnTools,
 				bootstrap,
 				extensionPayload: params.metadata ?? null,
 				parentPaseoAgentId: process.env.PASEO_AGENT_ID?.trim() || undefined,
@@ -1510,6 +1536,7 @@ export async function executeCrewAdd(
 			sessionId,
 			ctx,
 			adapters,
+			pi,
 		});
 		return textResult(
 			queued.transient

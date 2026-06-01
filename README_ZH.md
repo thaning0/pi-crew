@@ -126,13 +126,16 @@ pi-crew 自动串联任务--下游任务等待上游完成,自动触发,无需�
 
 ### 自定义智能体
 
-创建一个 `.md` 文件,一行配置,即刻拥有专属智能体:
+创建一个 `.md` 文件,一行配置,即刻拥有专属智能体。
+
+使用 `tools`（白名单）限制智能体可用的工具，或使用 `disabled_tools`（黑名单）排除默认工具集中的指定工具。两者并存时,`disabled_tools` 从 `tools` 中过滤。Crew 消息工具（`crew_tell`、`crew_reply` 等）始终可用,不可移除。
 
 ```markdown
 ---
 name: db-expert
 description: 数据库设计与 SQL 优化专家
-tools: read, grep, find, ls, todo, wait, bash, web_search
+tools: read, grep, find, ls, todo, wait, bash, web_search  # 白名单（可选）
+disabled_tools: edit, write                                  # 黑名单（可选）
 thinking: high
 worktree: false
 ---

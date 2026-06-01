@@ -672,7 +672,8 @@ export async function processUnreadMessages(
 			(message.to === "room" &&
 				context.role === "owner" &&
 				message.from !== context.memberName &&
-				message.kind !== "progress");
+				message.kind !== "progress" &&
+				message.silent !== true);
 
 		if (shouldDeliver) {
 			if (!isTargetedTask && message.kind !== "task") {
@@ -871,7 +872,7 @@ export async function activateBootstrapRoom(
 				replyTo: null,
 				kind: "info",
 				summary: `${bootstrap.memberName} (${bootstrap.memberType}) ${status}`,
-				silent: joinBatchId || spawning ? true : undefined,
+				silent: joinBatchId ? true : undefined,
 			});
 		}
 		if (joinBatchId) {

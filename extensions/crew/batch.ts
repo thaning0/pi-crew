@@ -1466,6 +1466,7 @@ async function appendBatchAggregateMessage(
 		from: "system",
 		to: "room",
 		batchId: batchContext.id,
+		silent: message.kind === "info" && batchContext.silentOwnerDelivery ? true : undefined,
 		broadcast: true,
 		replyTo: message.replyTo ?? null,
 		kind: message.kind,

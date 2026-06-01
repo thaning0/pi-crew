@@ -41,6 +41,10 @@ export interface AgentDefinition {
 	type: string;
 	systemPrompt: string | null;
 	tools?: string[];
+	/** Tools to exclude from the agent's default tool set.
+	 *  Applied as a blacklist after the tools whitelist (if any).
+	 *  Crew messaging tools (crew_tell, etc.) are never removable. */
+	disabled_tools?: string[];
 	model?: string;
 	worktree?: boolean;
 	/** Thinking level: off, minimal, low, medium, high, xhigh. When unset, inherits from orchestrator. */
@@ -135,6 +139,7 @@ function buildAgentDefinition(
 		type: normalizedType,
 		systemPrompt: body.trim().length > 0 ? body.trim() : null,
 		tools: normalizeToolList(frontmatter.tools),
+		disabled_tools: normalizeToolList(frontmatter.disabled_tools),
 		model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
 		worktree: normalizeBoolean(frontmatter.worktree),
 		thinking: normalizeThinking(frontmatter.thinking),

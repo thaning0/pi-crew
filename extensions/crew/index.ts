@@ -3,6 +3,8 @@ import {
 	listRoomAgentTypes,
 	loadTypedRoomAgentDefinition,
 	parseRoomBootstrapFromEnv,
+	getCrewMessageToolNames,
+	CREW_MANAGE_TOOL_NAMES,
 } from "./bootstrap.ts";
 import { loadOrchestratorPromptBody } from "./orchestrator-prompt.ts";
 import {
@@ -447,6 +449,7 @@ export default function roomExtension(
 						sessionId,
 						ctx: { cwd: projectCwd, hasUI: false },
 						adapters,
+						pi,
 					});
 				});
 			}
@@ -547,6 +550,7 @@ export default function roomExtension(
 									sessionId,
 									ctx: { cwd: projectCwd, hasUI: false },
 									adapters,
+									pi,
 								});
 							});
 						}
@@ -589,34 +593,23 @@ export default function roomExtension(
 				? loadTypedRoomAgentDefinition(activeRoom.memberType, ctx.cwd)
 				: null;
 			let allowed: string[];
-			const crewBase = [
-				"crew_tell",
-				"crew_messages",
-				"crew_reply",
-				"crew_read",
-				"crew_who",
-				"crew_tasks",
-			];
 			// Prevent recursive nesting: explorer agents must not use the explore tool.
-			const crewMessageToolNames = activeRoom.memberType === "explorer"
-				? crewBase
-				: [...crewBase, "explore"];
-			const crewManageToolNames = [
-				"crew_add",
-				"crew_cancel",
-				"crew_remove",
-				"crew_roles",
-				"crew_merge",
-				"crew_batch",
-			];
+			const crewMessageToolNames = getCrewMessageToolNames(activeRoom.memberType);
+			// Determine base allowed tools: whitelist if specified, otherwise all non-management tools.
 			if (agentDef?.tools && agentDef.tools.length > 0) {
-				allowed = [...new Set([...agentDef.tools, ...crewMessageToolNames])];
+				allowed = agentDef.tools;
 			} else {
 				allowed = pi
 					.getAllTools()
 					.map((t) => t.name)
-					.filter((name) => !crewManageToolNames.includes(name));
+					.filter((name) => !CREW_MANAGE_TOOL_NAMES.includes(name));
 			}
+			// Apply disabled_tools blacklist (if any). Does not affect crew message tools.
+			if (agentDef?.disabled_tools && agentDef.disabled_tools.length > 0) {
+				allowed = allowed.filter((t) => !agentDef.disabled_tools!.includes(t));
+			}
+			// Always include crew messaging tools.
+			allowed = [...new Set([...allowed, ...crewMessageToolNames])];
 			pi.setActiveTools(allowed);
 
 			// Tool filtering via setActiveTools() is sufficient.
@@ -1078,6 +1071,7 @@ export default function roomExtension(
 						...data,
 					},
 					{
+						pi,
 						activeRoom: ownerRoom,
 						sessionId: ownerRoom.sessionId,
 						ctx,

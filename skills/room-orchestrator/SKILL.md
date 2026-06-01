@@ -164,15 +164,18 @@ When user want to add a custom agent that is not in the predefined roles, provid
   - repo agents: `.pi/crew_agents`
   - global agents: `~/.pi/crew_agents`
 - Priority: repo > global > built-in, same name will override
+- **Tool control**: use `tools` (allowlist) to restrict which tools the agent has; use `disabled_tools` (blocklist) to exclude specific tools from the default set. When both are present, `disabled_tools` filters from `tools`. Crew messaging tools (`crew_tell`, `crew_reply`, etc.) are never removable.
 - File format:
   ```markdown
   ---
   name: agent-name
   description: Description of the agent's role and capabilities.
-  tools: read, grep, find, ls, ...
+  tools: read, grep, find, ls, ...         # allowlist (optional)
+  disabled_tools: bash, edit               # blocklist (optional)
   thinking: xhigh
   model: deepseek-v4-pro
   worktree: false # true if the agent needs a separate git worktree, false if it can share with the owner
+  heartbeat-stale-ms: 10000 # override heartbeat timeout (optional)
   ---
   You are ...
   ```

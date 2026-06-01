@@ -25,6 +25,35 @@ export function loadTypedRoomAgentDefinition(memberType: string, cwd?: string): 
 	return loadAgentDefinition(memberType, cwd);
 }
 
+/** Crew messaging tools that are always available to every sub-agent (never removable). */
+export const CREW_MESSAGE_TOOL_NAMES = [
+	"crew_tell",
+	"crew_messages",
+	"crew_reply",
+	"crew_read",
+	"crew_who",
+	"crew_tasks",
+] as const;
+
+/** Crew management tools restricted to the owner/lead agent only. */
+export const CREW_MANAGE_TOOL_NAMES = [
+	"crew_add",
+	"crew_cancel",
+	"crew_remove",
+	"crew_roles",
+	"crew_merge",
+	"crew_batch",
+] as const;
+
+/**
+ * Return the full set of crew message tool names for an agent type.
+ * Explorer agents are excluded from using the `explore` tool to prevent recursive nesting.
+ */
+export function getCrewMessageToolNames(agentType: string): string[] {
+	if (agentType === "explorer") return [...CREW_MESSAGE_TOOL_NAMES];
+	return [...CREW_MESSAGE_TOOL_NAMES, "explore"];
+}
+
 /** Agent types that should not appear as directly-spawnable subagents. */
 const HIDDEN_AGENT_TYPES = new Set(["explorer"]);
 
