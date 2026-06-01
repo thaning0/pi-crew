@@ -84,7 +84,6 @@ afterEach(() => {
 	resetActiveRoomsForTests();
 	vi.restoreAllMocks();
 	vi.unstubAllEnvs();
-	vi.resetModules();
 });
 
 describe("orchestrator prompt overrides", () => {

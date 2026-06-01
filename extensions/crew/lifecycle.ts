@@ -75,6 +75,10 @@ export interface ActiveRoomContext {
 		message: RoomMessage;
 	}) => Promise<void> | void;
 	staleReapScheduled?: boolean;
+	/** Cached subagents block injected into the orchestrator system prompt.
+	 *  Built once per session to avoid filesystem reads every turn and ensure
+	 *  deterministic prompt text for LLM cache hits. */
+	cachedSubagentsBlock?: string;
 	/** Messages accumulated during the debounce window, delivered as a single batch. */
 	pendingDeliveryBatch: Array<{ message: RoomMessage; isNewTask: boolean }>;
 	/** Debounce timer for batch delivery. Null when no delivery is pending. */
@@ -991,6 +995,7 @@ export async function resolveAccessibleRoom(
 			shuttingDown: false,
 			beforeDeliverMessage,
 			staleReapScheduled: false,
+			cachedSubagentsBlock: undefined,
 			pendingDeliveryBatch: [],
 			deliveryTimer: null,
 		}),

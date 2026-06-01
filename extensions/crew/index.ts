@@ -379,6 +379,7 @@ export default function roomExtension(
 		pendingHeartbeat: null,
 		pendingToolTasks: new Set<Promise<unknown>>(),
 		shuttingDown: false,
+		cachedSubagentsBlock: undefined,
 		beforeDeliverMessage: options.beforeDeliverMessage,
 		staleReapScheduled: false,
 		pendingDeliveryBatch: [],
@@ -664,17 +665,23 @@ export default function roomExtension(
 				// Build available subagents section from agent definitions so the
 				// orchestrator always knows what types are available without
 				// needing to call crew_roles first.
-				const agentTypes = listRoomAgentTypes(ctx.cwd);
-				const subagentsBlock =
-					agentTypes.length > 0
-						? "## Available Subagents\n" +
-							agentTypes
-								.map(
-									(t) =>
-										`- **${t.type}**: ${t.description || "(no description)"}${t.tools && t.tools.length > 0 ? ` [tools: ${t.tools.join(", ")}]` : ""}`,
-								)
-								.join("\n")
-						: "## Available Subagents\n(no agent definitions found — check agents/ directory)";
+				// Cached per-session to ensure deterministic prompt text across
+				// turns (stable LLM cache hits) and avoid filesystem reads.
+				let subagentsBlock = activeRoom.cachedSubagentsBlock;
+				if (subagentsBlock === undefined) {
+					const agentTypes = listRoomAgentTypes(ctx.cwd);
+					subagentsBlock =
+						agentTypes.length > 0
+							? "## Available Subagents\n" +
+								agentTypes
+									.map(
+										(t) =>
+											`- **${t.type}**: ${t.description || "(no description)"}${t.tools && t.tools.length > 0 ? ` [tools: ${t.tools.join(", ")}]` : ""}`,
+									)
+									.join("\n")
+							: "## Available Subagents\n(no agent definitions found — check agents/ directory)";
+					activeRoom.cachedSubagentsBlock = subagentsBlock;
+				}
 				const currentPrompt = ctx.getSystemPrompt?.() ?? event.systemPrompt;
 				return {
 					systemPrompt:

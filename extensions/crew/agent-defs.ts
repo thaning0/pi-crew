@@ -203,7 +203,7 @@ export function listAgentTypes(cwd?: string): Array<{ type: string; description:
 	for (const dir of searchDirs) {
 		let entries: string[] = [];
 		try {
-			entries = fs.readdirSync(dir);
+			entries = fs.readdirSync(dir).sort();
 		} catch {
 			continue;
 		}
@@ -225,5 +225,6 @@ export function listAgentTypes(cwd?: string): Array<{ type: string; description:
 			}
 		}
 	}
+	results.sort((a, b) => a.type.localeCompare(b.type));
 	return results;
 }
