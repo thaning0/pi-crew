@@ -116,8 +116,11 @@ function resolveInstalledPaseoCliPath(): string | null {
 		stdio: ["ignore", "pipe", "ignore"],
 	});
 	if (result.status !== 0) return null;
-	const resolved = result.stdout.trim().split(/\r?\n/).find((line) => line.trim().length > 0);
-	return resolved ?? null;
+	// Resolve the LAST non-empty line to avoid shell profile banner spam
+	// (e.g., MOTD messages) that appears before the actual command output.
+	const lines = result.stdout.trim().split(/\r?\n/).filter((line) => line.trim().length > 0);
+	const resolved = lines.length > 0 ? lines[lines.length - 1] : null;
+	return resolved;
 }
 
 function resolveInstalledPaseoCliRoot(): string | null {
@@ -400,7 +403,7 @@ export function createPaseoPiMemberAdapter(): RoomSpawnAdapter {
 		const log = createRoomLogger(null, "spawn");
 		try {
 			const helpers = await loadPaseoDaemonHelpers();
-			const client = await helpers.connectToDaemon({ host: process.env.PASEO_HOST });
+			const client = await helpers.connectToDaemon({ host: "" }); // Let connectToDaemon discover daemon from config
 			if (!client.fetchAgent) {
 				return {
 					live: false,
@@ -469,7 +472,7 @@ export function createPaseoPiMemberAdapter(): RoomSpawnAdapter {
 			if (resolveInstalledPaseoCliRoot() === null) return false;
 			try {
 				const helpers = await loadPaseoDaemonHelpers();
-				const client = await helpers.connectToDaemon({ host: process.env.PASEO_HOST });
+				const client = await helpers.connectToDaemon({ host: "" }); // Let connectToDaemon discover daemon from config
 				await client.close?.().catch(() => {});
 				return true;
 			} catch (error) {
@@ -486,7 +489,7 @@ export function createPaseoPiMemberAdapter(): RoomSpawnAdapter {
 				log.error("paseo daemon helpers load failed", { memberName: request.memberName, error: String(error) });
 				throw error;
 			}
-			const client = await helpers.connectToDaemon({ host: process.env.PASEO_HOST });
+			const client = await helpers.connectToDaemon({ host: "" }); // Let connectToDaemon discover daemon from config
 			try {
 				const systemPrompt =
 					request.systemPrompt ??
@@ -530,7 +533,7 @@ export function createPaseoPiMemberAdapter(): RoomSpawnAdapter {
 			const log = createRoomLogger(null, "spawn");
 			try {
 				const helpers = await loadPaseoDaemonHelpers();
-				const client = await helpers.connectToDaemon({ host: process.env.PASEO_HOST });
+				const client = await helpers.connectToDaemon({ host: "" }); // Let connectToDaemon discover daemon from config
 				try {
 					await client.cancelAgent?.(member.runtimeId);
 					log.debug("paseo member stopped", { memberName: member.name, runtimeId: member.runtimeId });
@@ -547,7 +550,7 @@ export function createPaseoPiMemberAdapter(): RoomSpawnAdapter {
 			const log = createRoomLogger(null, "spawn");
 			try {
 				const helpers = await loadPaseoDaemonHelpers();
-				const client = await helpers.connectToDaemon({ host: process.env.PASEO_HOST });
+				const client = await helpers.connectToDaemon({ host: "" }); // Let connectToDaemon discover daemon from config
 				try {
 					await client.deleteAgent?.(member.runtimeId);
 					log.debug("paseo member removed", { memberName: member.name, runtimeId: member.runtimeId });

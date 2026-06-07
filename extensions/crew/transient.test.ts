@@ -150,12 +150,17 @@ describe("transient subagents", () => {
 			});
 			setOwnerActiveRoomContext(created, sessionId);
 
+			// Force paseo unavailable so the test path always selects the pi adapter.
+			const paseoUnavailable: RoomSpawnAdapter = {
+				...createPaseoPiMemberAdapter(),
+				isAvailable: async () => false,
+			};
 			const result = await executeCrewAdd(
 				{ name: "worker", type: "worker", task: "Do something" },
 				{ sendMessage() { return undefined; } } as any,
 				{ cwd: tempDir, hasUI: false, sessionManager: { getSessionId: () => sessionId } },
 				runtimeRoot,
-				{ pi: createPiMemberAdapter(), paseo: createPaseoPiMemberAdapter() },
+				{ pi: createPiMemberAdapter(), paseo: paseoUnavailable },
 				{},
 			);
 			expect(result.isError).toBeUndefined();
