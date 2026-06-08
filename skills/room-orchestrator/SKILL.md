@@ -71,7 +71,33 @@ crew_batch {
 }
 ```
 
-**Agent reuse:** `crew_batch` reuses existing `idle` members when the name matches. This allows pre-building an agent pool via `crew_add`, then running multiple `crew_batch` calls against the same agents — avoiding repeated initialization overhead. After batch completion, agents remain `idle`.
+**Agent reuse:** `crew_batch` reuses existing `idle` members when both `name` and `type` match. After a batch completes, agents remain `idle` — the next `crew_batch` call with the same names reuses them directly, no respawn needed.
+
+```
+// First batch: spawns coder and reviewer
+crew_batch {
+  template: "implement-review-loop",
+  params: {
+    author: { name: "coder", type: "worker" },
+    reviewers: [{ name: "reviewer", type: "code-quality-reviewer" }],
+    initialAuthorTask: "...",
+    maxRounds: 3
+  }
+}
+
+// Second batch: same names → reuses idle coder and reviewer, no new spawn
+crew_batch {
+  template: "implement-review-loop",
+  params: {
+    author: { name: "coder", type: "worker" },
+    reviewers: [{ name: "reviewer", type: "code-quality-reviewer" }],
+    initialAuthorTask: "...",
+    maxRounds: 3
+  }
+}
+```
+
+Do NOT invent new names for each `crew_batch` call — that forces unnecessary respawns. You may also pre-build a pool with `crew_add` before the first batch if you prefer.
 
 **When NOT to use batch templates:**
 - Single simple task with one agent → Pattern 1 or 2
